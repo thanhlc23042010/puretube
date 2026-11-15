@@ -1,0 +1,17 @@
+{
+  "name": "puretube-mobile",
+  "version": "1.0.0",
+  "description": "PureTube 100% Standalone Android APK & iOS IPA Wrapper",
+  "private": true,
+  "scripts": {
+    "sync:web": "python sync_web.py",
+    "sync": "python sync_web.py && npx cap sync"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.0",
+    "@capacitor/cli": "^6.1.0",
+    "@capacitor/core": "^6.1.0",
+    "@capacitor/ios": "^6.1.0",
+    "puretube-native": "file:./plugins/puretube-native"
+  }
+}

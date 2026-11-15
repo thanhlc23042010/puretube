@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+backend/google_auth_chrome/
+backend/google_auth_profile/
+backend/downloads/
+backend/oauth_token.json
+backend/auth_state.json
+backend/youtube_cookies.txt
+mobile/node_modules/
+mobile/android/
+mobile/ios/
+mobile/www/
+.git/

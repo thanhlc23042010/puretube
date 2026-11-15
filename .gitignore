@@ -1,0 +1,17 @@
+# Sensitive local user credentials & cookies (NEVER commit!)
+backend/oauth_token.json
+backend/auth_state.json
+backend/youtube_cookies.txt
+backend/google_auth_chrome/
+backend/google_auth_profile/
+backend/downloads/
+__pycache__/
+*.pyc
+
+# Mobile build intermediates
+mobile/node_modules/
+mobile/www/
+mobile/android/
+mobile/ios/
+mobile/**/build/
+mobile/**/.gradle/

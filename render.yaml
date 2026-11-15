@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: puretube-app
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /api/info
+    envVars:
+      - key: PURETUBE_CLOUD_MODE
+        value: "1"

@@ -1,0 +1,14 @@
+{
+  "name": "puretube-native",
+  "version": "1.0.0",
+  "description": "PureTube CORS-free native HTTP & InnerTube bridge for standalone 4G/5G playback",
+  "main": "dist/esm/index.js",
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0B0C10" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="PureTube" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="description" content="PureTube — Xem YouTube không quảng cáo, lồng tiếng Tiếng Việt tự động, đồng bộ tài khoản Google trên iPhone, Android và PC." />
+  <title>PureTube — Xem Video Không Quảng Cáo</title>
+  <link rel="manifest" href="/manifest.json" />
+  <link rel="icon" type="image/svg+xml" href="/assets/icon.svg" />
+  <link rel="apple-touch-icon" href="/assets/icon.svg" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <!-- Sidebar (Desktop) -->
+    <aside class="sidebar" aria-label="Điều hướng chính">
+      <div class="sidebar-header">
+        <button class="brand-btn" data-nav="home" aria-label="Trang chủ PureTube">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 28 28" width="28" height="28" fill="none">
+              <path d="M14 2.5L24.5 6.8V14.8C24.5 20.6 20 25 14 26.8C8 25 3.5 20.6 3.5 14.8V6.8L14 2.5Z" fill="#13151C" stroke="#10B981" stroke-width="2" stroke-linejoin="round"/>
+              <path d="M11.5 10.2L18.8 14.5L11.5 18.8V10.2Z" fill="#FF3B5C"/>
+            </svg>
+          </span>
+          <span class="brand-wordmark">Pure<span>Tube</span></span>
+        </button>
+      </div>
+
+      <nav class="sidebar-nav" id="desktop-nav">
+        <button class="nav-item active" data-tab="home">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1v-9.5z"/></svg>
+          <span>Khám phá</span>
+        </button>
+        <button class="nav-item" data-tab="subscriptions">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M7 3h10"/><path d="M10 10.5l5 2.5-5 2.5v-5z"/></svg>
+          <span>Kênh đăng ký</span>
+        </button>
+        <button class="nav-item" data-tab="playlists">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M4 6h12M4 11h12M4 16h8"/><path d="M16 14l5 3-5 3v-6z"/></svg>
+          <span>Danh sách phát</span>
+        </button>
+        <button class="nav-item" data-tab="history">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+          <span>Lịch sử xem</span>
+        </button>
+        <button class="nav-item" data-tab="settings">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>Cài đặt</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="shield-panel">
+          <div class="shield-panel-head">
+            <svg class="icon shield-icon" viewBox="0 0 24 24"><path d="M12 2l8 3.5v6.5c0 5-3.4 9.1-8 10.5C7.4 21.1 4 17 4 12V5.5L12 2z"/><path d="M9 12l2 2 4-4"/></svg>
+            <span>Khiên Sạch Quảng Cáo</span>
+          </div>
+          <div class="shield-stats">
+            <div class="shield-stat-row">
+              <span>Quảng cáo đã chặn</span>
+              <strong id="sidebar-ads-blocked">0</strong>
+            </div>
+            <div class="shield-stat-row">
+              <span>Thời gian tiết kiệm</span>
+              <strong id="sidebar-time-saved">0 giây</strong>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn-pair-mobile" id="open-qr-modal-sidebar">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v7M14 20h3"/></svg>
+          <span>Mở trên iPhone / Android</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content Column -->
+    <div class="main-column">
+      <!-- Top Header -->
+      <header class="topbar">
+        <div class="topbar-mobile-brand">
+          <button class="brand-btn" data-nav="home" aria-label="Trang chủ PureTube">
+            <span class="brand-mark" aria-hidden="true">
+              <svg viewBox="0 0 28 28" width="24" height="24" fill="none">
+                <path d="M14 2.5L24.5 6.8V14.8C24.5 20.6 20 25 14 26.8C8 25 3.5 20.6 3.5 14.8V6.8L14 2.5Z" fill="#13151C" stroke="#10B981" stroke-width="2" stroke-linejoin="round"/>
+                <path d="M11.5 10.2L18.8 14.5L11.5 18.8V10.2Z" fill="#FF3B5C"/>
+              </svg>
+            </span>
+            <span class="brand-wordmark">Pure<span>Tube</span></span>
+          </button>
+        </div>
+
+        <div class="search-wrapper" id="search-wrapper">
+          <form class="search-form" id="search-form" autocomplete="off">
+            <svg class="icon search-leading-icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            <input
+              type="search"
+              id="search-input"
+              placeholder="Tìm video, kênh hoặc dán link YouTube..."
+              aria-label="Tìm kiếm video hoặc dán liên kết YouTube"
+              enterkeyhint="search"
+            />
+            <button type="button" id="search-clear-btn" class="icon-btn hidden" aria-label="Xóa từ khóa">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+            </button>
+            <button type="submit" class="search-submit-btn" aria-label="Tìm kiếm">
+              <svg class="icon" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+            </button>
+          </form>
+          <div class="search-suggestions hidden" id="search-suggestions" role="listbox"></div>
+        </div>
+
+        <div class="topbar-actions">
+          <span class="adfree-badge" title="Luồng phát trực tiếp không chứa quảng cáo">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M12 2l8 3.5v6.5c0 5-3.4 9.1-8 10.5C7.4 21.1 4 17 4 12V5.5L12 2z"/><path d="M9 12l2 2 4-4"/></svg>
+            <span class="adfree-text">Không QC</span>
+          </span>
+          <button type="button" class="btn-auth" id="open-auth-modal-btn" title="Đăng nhập tài khoản Google để đồng bộ lịch sử YouTube">
+            <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-3.8 3.6-6 8-6s8 2.2 8 6"/></svg>
+            <span id="auth-btn-label">Đăng nhập</span>
+          </button>
+          <button class="icon-btn mobile-qr-btn" id="open-qr-modal-top" title="Kết nối iPhone / Android" aria-label="Mã QR kết nối điện thoại">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v7M14 20h3"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Scrollable Viewport -->
+      <main class="view-container" id="view-container">
+        <!-- HOME / DISCOVER VIEW -->
+        <section id="view-home" class="page-view active">
+          <div class="category-strip" id="category-strip" role="tablist" aria-label="Danh mục video">
+            <button class="chip active" data-category="all">Thịnh hành</button>
+            <button class="chip" data-category="music">Âm nhạc</button>
+            <button class="chip" data-category="gaming">Trò chơi</button>
+            <button class="chip" data-category="tech">Công nghệ</button>
+            <button class="chip" data-category="chill">Chill & Học tập</button>
+          </div>
+          <div class="section-header" id="home-section-header">
+            <h1 class="section-title" id="home-title">Video thịnh hành sạch quảng cáo</h1>
+            <button class="btn-subtle hidden" id="clear-search-results-btn">Quay lại thịnh hành</button>
+          </div>
+          <div class="video-grid" id="home-video-grid"></div>
+        </section>
+
+        <!-- SUBSCRIPTIONS VIEW -->
+        <section id="view-subscriptions" class="page-view">
+          <div class="section-header">
+            <h1 class="section-title">Kênh đã đăng ký</h1>
+            <div class="source-tabs" id="subs-source-tabs">
+              <button type="button" class="source-tab active" data-subs-source="local">Trên máy</button>
+              <button type="button" class="source-tab" data-subs-source="youtube">Đồng bộ YouTube</button>
+            </div>
+          </div>
+          <div class="channel-pills" id="subs-channel-pills"></div>
+          <div id="subs-content"></div>
+        </section>
+
+        <!-- PLAYLISTS VIEW -->
+        <section id="view-playlists" class="page-view">
+          <div class="section-header">
+            <h1 class="section-title">Danh sách phát của bạn</h1>
+            <button class="btn-primary btn-sm" id="create-playlist-btn">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+              <span>Tạo mới</span>
+            </button>
+          </div>
+          <div id="playlists-content"></div>
+        </section>
+
+        <!-- HISTORY VIEW -->
+        <section id="view-history" class="page-view">
+          <div class="section-header">
+            <h1 class="section-title">Lịch sử đã xem</h1>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <div class="source-tabs" id="history-source-tabs">
+                <button type="button" class="source-tab active" data-history-source="local">PureTube</button>
+                <button type="button" class="source-tab" data-history-source="youtube">Tài khoản YouTube</button>
+              </div>
+              <button class="btn-subtle danger-text" id="clear-history-btn">Xóa lịch sử</button>
+            </div>
+          </div>
+          <div id="history-content"></div>
+        </section>
+
+        <!-- SETTINGS VIEW -->
+        <section id="view-settings" class="page-view">
+          <div class="section-header">
+            <h1 class="section-title">Cài đặt & Kết nối Di động</h1>
+          </div>
+          <div class="settings-layout" id="settings-content"></div>
+        </section>
+
+        <!-- WATCH / PLAYER VIEW -->
+        <section id="view-watch" class="page-view watch-view">
+          <div class="watch-layout">
+            <div class="watch-primary">
+              <div class="watch-backbar">
+                <button class="btn-subtle" id="watch-minimize-btn">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>
+                  <span>Thu nhỏ & Duyệt tiếp</span>
+                </button>
+                <div class="watch-status-pill" id="watch-adshield-pill">
+                  <svg class="icon" viewBox="0 0 24 24"><path d="M12 2l8 3.5v6.5c0 5-3.4 9.1-8 10.5C7.4 21.1 4 17 4 12V5.5L12 2z"/><path d="M9 12l2 2 4-4"/></svg>
+                  <span>Luồng sạch 100%</span>
+                </div>
+              </div>
+
+              <!-- Custom Player Shell -->
+              <div class="player-stage" id="player-stage" tabindex="0">
+                <video id="main-video" playsinline webkit-playsinline preload="auto"></video>
+                <audio id="main-audio" preload="auto"></audio>
+                <audio id="dub-audio" preload="auto"></audio>
+
+                <!-- Vietnamese Subtitle & Dubbing Overlay -->
+                <div class="subtitle-overlay hidden" id="subtitle-overlay" aria-live="polite"></div>
+
+                <!-- Audio-Only Cover Stage -->
+                <div class="audio-stage hidden" id="audio-stage">
+                  <div class="audio-disc-wrap">
+                    <img id="audio-cover-img" src="" alt="Ảnh bìa phát nhạc nền" />
+                  </div>
+                  <div class="audio-stage-info">
+                    <span class="audio-badge">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3v5zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3v5z"/></svg>
+                      Chế độ Chỉ Âm Thanh (Nghe nền tiết kiệm pin & dữ liệu)
+                    </span>
+                    <div class="audio-eq" id="audio-eq" aria-hidden="true">
+                      <span></span><span></span><span></span><span></span><span></span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Loading Spinner -->
+                <div class="player-spinner hidden" id="player-spinner" aria-label="Đang tải luồng phát">
+                  <div class="spinner-ring"></div>
+                </div>
+
+                <!-- Double-tap / Gesture Indicator -->
+                <div class="seek-feedback hidden" id="seek-feedback"></div>
+
+                <!-- SponsorBlock Skip Toast -->
+                <div class="sponsor-toast hidden" id="sponsor-toast">
+                  <div class="sponsor-toast-text">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M12 2l8 3.5v6.5c0 5-3.4 9.1-8 10.5C7.4 21.1 4 17 4 12V5.5L12 2z"/><path d="M9 12l2 2 4-4"/></svg>
+                    <span id="sponsor-toast-msg">Đã bỏ qua đoạn tài trợ</span>
+                  </div>
+                  <button type="button" id="sponsor-undo-btn" class="sponsor-undo-btn">Xem lại</button>
+                </div>
+
+                <!-- Player Overlay Controls -->
+                <div class="player-controls" id="player-controls">
+                  <div class="player-top-controls">
+                    <button type="button" class="ctrl-pill" id="btn-audio-only" title="Chuyển sang chế độ chỉ nghe nhạc / nghe nền">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M3 18v-6a9 9 0 0 1 18 0v6"/><path d="M21 19a2 2 0 0 1-2 2h-1a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h3v5zM3 19a2 2 0 0 0 2 2h1a2 2 0 0 0 2-2v-3a2 2 0 0 0-2-2H3v5z"/></svg>
+                      <span id="audio-only-label">Chỉ âm thanh</span>
+                    </button>
+                    <div class="player-top-right">
+                      <button type="button" class="ctrl-pill" id="btn-dubbing-toggle" title="Lồng tiếng & Phụ đề Tiếng Việt tự động">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M5 8l6 6M4 14l6-6 2-3M2 5h12M7 2h1"/><path d="M22 22l-5-10-5 10M14 18h6"/></svg>
+                        <span id="current-dubbing-label">Lồng tiếng VN</span>
+                      </button>
+                      <button type="button" class="ctrl-pill" id="btn-quality-toggle" title="Chọn độ phân giải">
+                        <span id="current-quality-label">720p HD</span>
+                      </button>
+                      <button type="button" class="ctrl-pill" id="btn-speed-toggle" title="Tốc độ phát">
+                        <span id="current-speed-label">1x</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Center Tap Play/Pause & Seek -->
+                  <div class="player-center-controls">
+                    <button type="button" class="center-ctrl-btn" id="btn-seek-back" aria-label="Tua lùi 10 giây">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><text x="9" y="15" font-size="7" fill="currentColor" stroke="none" font-weight="700">10</text></svg>
+                    </button>
+                    <button type="button" class="center-ctrl-btn play-lg" id="btn-play-center" aria-label="Phát hoặc Tạm dừng">
+                      <svg class="icon icon-play" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>
+                      <svg class="icon icon-pause hidden" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" fill="currentColor" stroke="none"/><rect x="14" y="4" width="4" height="16" fill="currentColor" stroke="none"/></svg>
+                    </button>
+                    <button type="button" class="center-ctrl-btn" id="btn-seek-fwd" aria-label="Tua tới 10 giây">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/><text x="9" y="15" font-size="7" fill="currentColor" stroke="none" font-weight="700">10</text></svg>
+                    </button>
+                  </div>
+
+                  <!-- Bottom Progress & Bar -->
+                  <div class="player-bottom-controls">
+                    <div class="progress-wrap" id="progress-wrap">
+                      <div class="progress-track">
+                        <div class="progress-buffered" id="progress-buffered"></div>
+                        <div class="sponsor-markers" id="sponsor-markers"></div>
+                        <div class="progress-filled" id="progress-filled"></div>
+                      </div>
+                      <input type="range" id="progress-scrubber" min="0" max="1000" value="0" aria-label="Thanh tiến trình video" />
+                    </div>
+
+                    <div class="controls-row">
+                      <div class="controls-left">
+                        <button type="button" class="ctrl-btn" id="btn-play-bar" aria-label="Phát hoặc Tạm dừng">
+                          <svg class="icon icon-play" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>
+                          <svg class="icon icon-pause hidden" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" fill="currentColor" stroke="none"/><rect x="14" y="4" width="4" height="16" fill="currentColor" stroke="none"/></svg>
+                        </button>
+                        <button type="button" class="ctrl-btn" id="btn-next-bar" aria-label="Video tiếp theo">
+                          <svg class="icon" viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4" fill="currentColor" stroke="none"/><path d="M19 5v14"/></svg>
+                        </button>
+                        <button type="button" class="ctrl-btn" id="btn-mute-bar" aria-label="Tắt hoặc Bật tiếng">
+                          <svg class="icon icon-vol" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M19 5a9 9 0 0 1 0 14"/></svg>
+                          <svg class="icon icon-muted hidden" viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M22 9l-6 6M16 9l6 6"/></svg>
+                        </button>
+                        <input type="range" id="volume-slider" class="volume-slider" min="0" max="1" step="0.05" value="1" aria-label="Âm lượng" />
+                        <span class="time-display" id="time-display">0:00 / 0:00</span>
+                      </div>
+                      <div class="controls-right">
+                        <button type="button" class="ctrl-btn" id="btn-pip" title="Hình trong hình (Picture-in-Picture)" aria-label="Hình trong hình">
+                          <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="4" width="20" height="16" rx="2"/><rect x="12" y="11" width="8" height="6" rx="1" fill="currentColor" stroke="none"/></svg>
+                        </button>
+                        <button type="button" class="ctrl-btn" id="btn-fullscreen" title="Toàn màn hình" aria-label="Toàn màn hình">
+                          <svg class="icon" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Quality, Speed & Dubbing Popover Menu inside Player -->
+                <div class="player-popover hidden" id="player-popover"></div>
+              </div>
+
+              <!-- Video Metadata & Actions -->
+              <div class="watch-meta" id="watch-meta">
+                <h1 class="watch-title" id="watch-title">Đang tải thông tin video...</h1>
+                <div class="watch-stats-row">
+                  <span id="watch-views"></span>
+                  <span class="dot-sep">·</span>
+                  <span id="watch-sponsor-summary">Đang kiểm tra SponsorBlock...</span>
+                </div>
+
+                <div class="watch-channel-bar">
+                  <div class="channel-info-group">
+                    <div class="channel-avatar" id="watch-channel-avatar">P</div>
+                    <div>
+                      <div class="channel-name" id="watch-channel-name">...</div>
+                      <div class="channel-sub-hint" id="watch-sync-hint">Lưu cục bộ trên thiết bị</div>
+                    </div>
+                  </div>
+                  <div class="watch-action-buttons">
+                    <button class="btn-subscribe" id="watch-subscribe-btn">Đăng ký</button>
+                    <button class="btn-action" id="watch-save-playlist-btn">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
+                      <span>Lưu Playlist</span>
+                    </button>
+                    <div class="download-dropdown-wrap">
+                      <button class="btn-action" id="watch-download-btn">
+                        <svg class="icon" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        <span>Tải về</span>
+                      </button>
+                      <div class="dropdown-menu hidden" id="download-menu">
+                        <button type="button" data-dl-mode="audio" data-dl-height="0">Tải Nhạc MP3 (Chỉ âm thanh)</button>
+                        <button type="button" data-dl-mode="video" data-dl-height="1080">Tải Video MP4 (1080p FHD)</button>
+                        <button type="button" data-dl-mode="video" data-dl-height="720">Tải Video MP4 (720p HD)</button>
+                        <button type="button" data-dl-mode="video" data-dl-height="360">Tải Video MP4 (360p Nhẹ)</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- SponsorBlock Segments Legend (when present) -->
+                <div class="sponsor-legend hidden" id="sponsor-legend"></div>
+
+                <!-- Chapters (when present) -->
+                <div class="chapters-strip hidden" id="chapters-strip"></div>
+
+                <!-- Description Accordion -->
+                <div class="description-box">
+                  <button class="desc-toggle-btn" id="desc-toggle-btn">
+                    <span>Mô tả video</span>
+                    <svg class="icon" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
+                  </button>
+                  <div class="desc-body hidden" id="watch-description"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Watch Secondary Column (Queue & Related) -->
+            <aside class="watch-secondary">
+              <div class="queue-panel hidden" id="queue-panel">
+                <div class="queue-header">
+                  <div>
+                    <h2 class="queue-title" id="queue-title">Danh sách đang phát</h2>
+                    <span class="queue-sub" id="queue-progress-text">0 / 0</span>
+                  </div>
+                  <button class="btn-subtle" id="queue-clear-btn">Đóng</button>
+                </div>
+                <div class="queue-list" id="queue-list"></div>
+              </div>
+
+              <div class="related-panel">
+                <h2 class="related-heading">Video tiếp theo</h2>
+                <div class="related-list" id="related-list"></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </main>
+
+      <!-- Mini Player Bar -->
+      <div class="mini-player hidden" id="mini-player" role="region" aria-label="Trình phát thu nhỏ">
+        <div class="mini-player-progress" id="mini-player-progress"></div>
+        <div class="mini-player-main" id="mini-player-expand">
+          <img class="mini-thumb" id="mini-thumb" src="" alt="" />
+          <div class="mini-info">
+            <div class="mini-title" id="mini-title">...</div>
+            <div class="mini-channel" id="mini-channel">...</div>
+          </div>
+        </div>
+        <div class="mini-actions">
+          <button type="button" class="icon-btn" id="mini-play-btn" aria-label="Phát hoặc Tạm dừng">
+            <svg class="icon icon-play" viewBox="0 0 24 24"><polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/></svg>
+            <svg class="icon icon-pause hidden" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" fill="currentColor" stroke="none"/><rect x="14" y="4" width="4" height="16" fill="currentColor" stroke="none"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="mini-next-btn" aria-label="Bài tiếp theo">
+            <svg class="icon" viewBox="0 0 24 24"><polygon points="5 4 15 12 5 20 5 4" fill="currentColor" stroke="none"/><path d="M19 5v14"/></svg>
+          </button>
+          <button type="button" class="icon-btn" id="mini-close-btn" aria-label="Đóng trình phát">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Bottom Navigation (Mobile iPhone / Android) -->
+      <nav class="bottom-nav" id="mobile-nav" aria-label="Điều hướng di động">
+        <button class="bottom-nav-item active" data-tab="home">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5.5v-6h-5v6H4a1 1 0 0 1-1-1v-9.5z"/></svg>
+          <span>Khám phá</span>
+        </button>
+        <button class="bottom-nav-item" data-tab="subscriptions">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="6" width="18" height="14" rx="2"/><path d="M7 3h10"/><path d="M10 10.5l5 2.5-5 2.5v-5z"/></svg>
+          <span>Kênh</span>
+        </button>
+        <button class="bottom-nav-item" data-tab="playlists">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M4 6h12M4 11h12M4 16h8"/><path d="M16 14l5 3-5 3v-6z"/></svg>
+          <span>Playlist</span>
+        </button>
+        <button class="bottom-nav-item" data-tab="history">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+          <span>Lịch sử</span>
+        </button>
+        <button class="bottom-nav-item" data-tab="settings">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          <span>Cài đặt</span>
+        </button>
+      </nav>
+    </div>
+  </div>
+
+  <!-- Native Dialogs -->
+  <dialog id="qr-dialog" class="app-dialog">
+    <div class="dialog-header">
+      <h2>Cài đặt PureTube lên iPhone & Android</h2>
+      <button class="icon-btn" data-close-dialog="qr-dialog" aria-label="Đóng">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="dialog-body" id="qr-dialog-body"></div>
+  </dialog>
+
+  <dialog id="playlist-dialog" class="app-dialog">
+    <div class="dialog-header">
+      <h2>Lưu vào danh sách phát</h2>
+      <button class="icon-btn" data-close-dialog="playlist-dialog" aria-label="Đóng">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="dialog-body" id="playlist-dialog-body"></div>
+  </dialog>
+
+  <dialog id="auth-dialog" class="app-dialog">
+    <div class="dialog-header">
+      <h2>Tài khoản Google & Đồng bộ YouTube</h2>
+      <button class="icon-btn" data-close-dialog="auth-dialog" aria-label="Đóng">
+        <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+    <div class="dialog-body" id="auth-dialog-body"></div>
+  </dialog>
+
+  <!-- Global App Toast -->
+  <div class="app-toast hidden" id="app-toast" role="status" aria-live="polite"></div>
+
+  <script src="/js/store.js"></script>
+  <script src="/js/standalone-bridge.js"></script>
+  <script src="/js/api.js"></script>
+  <script src="/js/player.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
