@@ -330,10 +330,11 @@ public class PureTubeNativePlugin extends Plugin {
     private void handleProxyClient(Socket client) {
         try {
             client.setSoTimeout(30000);
+            client.setTcpNoDelay(true);
             BufferedReader reader = new BufferedReader(
                 new InputStreamReader(client.getInputStream(), StandardCharsets.US_ASCII)
             );
-            OutputStream rawOut = new BufferedOutputStream(client.getOutputStream(), 32768);
+            OutputStream rawOut = new BufferedOutputStream(client.getOutputStream(), 65536);
 
             String requestLine = reader.readLine();
             if (requestLine == null || requestLine.isEmpty()) return;
@@ -461,15 +462,60 @@ public class PureTubeNativePlugin extends Plugin {
         OutputStream clientOut,
         ProgressCallback cb
     ) throws IOException {
-        long chunkSpan = (spec.totalLength > 0 && spec.totalLength < 35_000_000L) ? 262_144L : 524_288L;
         long cursor = start;
         long totalToCopy = (end - start) + 1;
         long totalCopied = 0;
-        byte[] buf = new byte[16384];
+        byte[] buf = new byte[65536];
 
+        // First attempt a single continuous upstream Range request (fast path: 1 TLS handshake for seek/playback)
+        if (cb == null && totalToCopy > 65536L) {
+            HttpURLConnection directConn = null;
+            boolean directAborted = false;
+            try {
+                directConn = openUpstream(spec.url, spec.headers, "bytes=" + cursor + "-" + end);
+                int directStatus = directConn.getResponseCode();
+                if (directStatus == 200 || directStatus == 206) {
+                    try (InputStream in = directConn.getInputStream()) {
+                        int n;
+                        long flushAcc = 0;
+                        boolean firstFlush = false;
+                        while (cursor <= end && (n = in.read(buf, 0, (int) Math.min(buf.length, (end - cursor) + 1))) != -1) {
+                            clientOut.write(buf, 0, n);
+                            cursor += n;
+                            totalCopied += n;
+                            flushAcc += n;
+                            if (!firstFlush || flushAcc >= 262144L) {
+                                clientOut.flush();
+                                firstFlush = true;
+                                flushAcc = 0;
+                            }
+                        }
+                        clientOut.flush();
+                    }
+                    if (cursor > end) {
+                        return;
+                    }
+                } else {
+                    directAborted = true;
+                }
+            } catch (IOException ioe) {
+                directAborted = true;
+                // Client disconnected (e.g. user dragged scrubber again): propagate immediately
+                if (totalCopied > 0 && cursor <= end) {
+                    throw ioe;
+                }
+            } finally {
+                if (directConn != null && (directAborted || cursor <= end)) {
+                    directConn.disconnect();
+                }
+            }
+        }
+
+        long chunkSpan = (spec.totalLength > 0 && spec.totalLength < 35_000_000L) ? 1_048_576L : 4_194_304L;
         while (cursor <= end) {
             long subEnd = Math.min(cursor + chunkSpan - 1, end);
             HttpURLConnection conn = null;
+            boolean cleanDone = false;
             try {
                 conn = openUpstream(spec.url, spec.headers, "bytes=" + cursor + "-" + subEnd);
                 int status = conn.getResponseCode();
@@ -492,12 +538,13 @@ public class PureTubeNativePlugin extends Plugin {
                     }
                     clientOut.flush();
                 }
+                cleanDone = (received == expected);
                 if (received <= 0) {
                     break;
                 }
                 cursor += received;
             } finally {
-                if (conn != null) conn.disconnect();
+                if (conn != null && !cleanDone) conn.disconnect();
             }
         }
     }

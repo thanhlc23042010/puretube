@@ -157,6 +157,26 @@ const PurePlayer = {
       media.addEventListener("play", onPlayStateChange);
       media.addEventListener("pause", onPlayStateChange);
 
+      media.addEventListener("seeking", () => {
+        if (media === video && !this.isAudioOnly) {
+          this.showSpinner(true);
+          if (this.isDualStream && !audio.paused) {
+            audio.pause();
+          }
+        }
+      });
+
+      media.addEventListener("seeked", () => {
+        if (media !== this.activeMedia() && !(this.isDualStream && !this.isAudioOnly && media === audio)) return;
+        const stillSeeking = video.seeking || (this.isDualStream && !this.isAudioOnly && audio.seeking);
+        if (!stillSeeking) {
+          this.showSpinner(false);
+          if (this.isDualStream && !this.isAudioOnly && !video.paused && audio.paused) {
+            audio.play().catch(() => {});
+          }
+        }
+      });
+
       media.addEventListener("waiting", () => {
         if (media === this.activeMedia()) {
           this.showSpinner(true);
@@ -170,8 +190,8 @@ const PurePlayer = {
         if (media === this.activeMedia()) {
           clearTimeout(this._loadWatchdogTimer);
           this.showSpinner(false);
-          if (this.isDualStream && !this.isAudioOnly && media === video && audio.paused) {
-            if (audio.readyState >= 1 && Math.abs(audio.currentTime - video.currentTime) > 0.25) {
+          if (this.isDualStream && !this.isAudioOnly && media === video && audio.paused && !video.seeking && !audio.seeking) {
+            if (audio.readyState >= 1 && Math.abs(audio.currentTime - video.currentTime) > 0.35) {
               audio.currentTime = video.currentTime;
             }
             audio.play().catch(() => {});
@@ -877,13 +897,20 @@ const PurePlayer = {
     const clamped = Math.max(0, Math.min(seconds, duration || seconds));
     this.stopDubSpeech();
     this.lastSpokenIdx = -1;
+    this._lastAudioSyncAt = Date.now();
+    if (Math.abs(clamped - this.getCurrentTime()) > 2) {
+      this.showSpinner(true);
+    }
     if (this.isAudioOnly) {
       this.els.audio.currentTime = clamped;
     } else {
-      this.els.video.currentTime = clamped;
-      if (this.isDualStream && this.els.audio.readyState >= 1) {
-        this.els.audio.currentTime = clamped;
+      if (this.isDualStream) {
+        if (!this.els.audio.paused) this.els.audio.pause();
+        if (this.els.audio.readyState >= 1) {
+          this.els.audio.currentTime = clamped;
+        }
       }
+      this.els.video.currentTime = clamped;
     }
     this.handleTimeUpdate();
   },
@@ -1147,9 +1174,18 @@ const PurePlayer = {
     const current = this.getCurrentTime();
     const duration = this.getDuration();
 
-    if (this.isDualStream && !this.isAudioOnly && !this.els.video.paused) {
+    if (
+      this.isDualStream &&
+      !this.isAudioOnly &&
+      !this.els.video.paused &&
+      !this.els.video.seeking &&
+      !this.els.audio.seeking &&
+      this.els.audio.readyState >= 2
+    ) {
+      const nowMs = Date.now();
       const drift = Math.abs(this.els.video.currentTime - this.els.audio.currentTime);
-      if (drift > 0.25) {
+      if (drift > 0.35 && nowMs - (this._lastAudioSyncAt || 0) > 1500) {
+        this._lastAudioSyncAt = nowMs;
         this.els.audio.currentTime = this.els.video.currentTime;
       }
     }

@@ -9,6 +9,7 @@
   const YT_TV_CLIENT_ID = "861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com";
   const YT_TV_CLIENT_SECRET = "SboVhoG9s0rNafixCSGGKXAT";
   const IOS_UA = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X;)";
+  const VISIONOS_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15";
   const AND_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip";
   const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36";
   const TV_UA = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version";
@@ -146,10 +147,10 @@
     return `${h}p`;
   }
 
-  function buildItem(vid, title, channel, durText = "", viewCount = 0) {
+  function buildItem(vid, title, channel, durText = "", viewCount = 0, allowShort = false) {
     if (!vid || vid.length !== 11 || !title) return null;
     const dur = parseDurationText(durText);
-    if (dur > 0 && dur < 45) return null;
+    if (!allowShort && dur > 0 && dur < 45) return null;
     return {
       id: vid,
       title,
@@ -162,7 +163,7 @@
     };
   }
 
-  function extractVideosFromInnerTube(payload, limit = 30) {
+  function extractVideosFromInnerTube(payload, limit = 30, allowShort = false) {
     const results = [];
     const seen = new Set();
 
@@ -238,7 +239,36 @@
               }
             }
           }
-          addItem(buildItem(String(vid || ""), title, channel, durText, parseViewCountText(viewTxt)));
+          addItem(buildItem(String(vid || ""), title, channel, durText, parseViewCountText(viewTxt), allowShort));
+        }
+      }
+
+      if (node.tileRenderer && typeof node.tileRenderer === "object") {
+        const tr = node.tileRenderer;
+        if (!hasAdBadge(tr)) {
+          const vid = tr.contentId || findWatchId(tr.onSelectCommand);
+          const tmeta = tr.metadata?.tileMetadataRenderer || {};
+          const title = extractYtText(tmeta.title);
+          const lineTexts = [];
+          for (const line of tmeta.lines || []) {
+            for (const item of line?.lineRenderer?.items || []) {
+              const txt = extractYtText(item?.lineItemRenderer?.text);
+              if (txt && txt !== "•" && txt !== "·") {
+                lineTexts.push(txt);
+              }
+            }
+          }
+          const channel = lineTexts[0] || "Kênh YouTube";
+          const viewTxt = lineTexts.find((t) => /lượt xem|view/i.test(t)) || "";
+          let durText = "";
+          for (const ov of tr.header?.tileHeaderRenderer?.thumbnailOverlays || []) {
+            const ts = ov?.thumbnailOverlayTimeStatusRenderer?.text;
+            if (ts) {
+              durText = extractYtText(ts);
+              break;
+            }
+          }
+          addItem(buildItem(String(vid || ""), title, channel, durText, parseViewCountText(viewTxt), allowShort));
         }
       }
 
@@ -250,7 +280,7 @@
           const channel = extractYtText(vr.ownerText || vr.shortBylineText || vr.longBylineText);
           const durText = extractYtText(vr.lengthText);
           const views = parseViewCountText(extractYtText(vr.viewCountText || vr.shortViewCountText));
-          addItem(buildItem(String(vid), title, channel, durText, views));
+          addItem(buildItem(String(vid), title, channel, durText, views, allowShort));
         }
       }
 
@@ -567,38 +597,60 @@
     return "Tài khoản Google (YouTube)";
   }
 
-  async function syncWatchHistory(videoId) {
+  async function syncWatchHistory(videoId, playbackData = null) {
     const token = await getValidAccessToken();
     if (!token) return;
     try {
       const headers = {
         Authorization: `Bearer ${token}`,
-        "User-Agent": "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
+        "User-Agent": TV_UA,
+        Origin: "https://www.youtube.com",
       };
-      const res = await nativeHttpPostJson(
-        "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-        {
-          context: { client: { clientName: "TVHTML5", clientVersion: "7.20250312.16.00", hl: "vi", gl: "VN" } },
-          videoId,
-        },
-        headers
-      );
-      if (res.status !== 200) return;
-      const pdata = JSON.parse(res.body);
-      let baseUrl = pdata?.playbackTracking?.videostatsPlaybackUrl?.baseUrl;
-      if (!baseUrl) return;
-      if (!baseUrl.startsWith("http")) baseUrl = `https://www.youtube.com${baseUrl}`;
-      const sep = baseUrl.includes("?") ? "&" : "?";
-      const len = pdata?.videoDetails?.lengthSeconds || "60";
-      await nativeHttpGet(`${baseUrl}${sep}cpn=PureTubeApp123&ver=2&cmt=0&len=${len}`, headers);
+      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      let cpn = "";
+      for (let i = 0; i < 16; i += 1) cpn += chars[Math.floor(Math.random() * chars.length)];
+
+      let pt = playbackData?.playbackTracking || null;
+      let len = playbackData?.videoDetails?.lengthSeconds || "60";
+      if (!pt?.videostatsPlaybackUrl?.baseUrl) {
+        const res = await nativeHttpPostJson(
+          "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+          {
+            context: { client: { clientName: "TVHTML5", clientVersion: "7.20250312.16.00", hl: "vi", gl: "VN" } },
+            videoId,
+            cpn,
+          },
+          headers
+        );
+        if (res.status === 200) {
+          const pdata = JSON.parse(res.body);
+          pt = pdata?.playbackTracking || null;
+          len = pdata?.videoDetails?.lengthSeconds || len;
+        }
+      }
+      let pbUrl = pt?.videostatsPlaybackUrl?.baseUrl;
+      if (!pbUrl) return;
+      if (!pbUrl.startsWith("http")) pbUrl = `https://www.youtube.com${pbUrl}`;
+      const sep1 = pbUrl.includes("?") ? "&" : "?";
+      await nativeHttpGet(`${pbUrl}${sep1}cpn=${cpn}&ver=2&cmt=0&len=${len}&el=leanback&ns=yt`, headers);
+
+      let wtUrl = pt?.videostatsWatchtimeUrl?.baseUrl;
+      if (wtUrl) {
+        if (!wtUrl.startsWith("http")) wtUrl = `https://www.youtube.com${wtUrl}`;
+        const sep2 = wtUrl.includes("?") ? "&" : "?";
+        await nativeHttpGet(
+          `${wtUrl}${sep2}cpn=${cpn}&ver=2&cmt=10.0&st=0.0&et=10.0&rt=10.2&len=${len}&state=playing&el=leanback&ns=yt&final=1`,
+          headers
+        );
+      }
     } catch (_) {}
   }
 
-  async function fetchInnerTubeBrowse(browseId, limit = 36) {
+  async function fetchInnerTubeBrowse(browseId, limit = 36, allowShort = false) {
     let token = await getValidAccessToken();
     if (!token) throw new Error("Bạn chưa đăng nhập tài khoản Google/YouTube.");
     const clients = [
-      { name: "TVHTML5", ver: "7.20250312.16.00", ua: "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version" },
+      { name: "TVHTML5", ver: "7.20250312.16.00", ua: TV_UA },
       { name: "WEB", ver: "2.20250312.04.00", ua: WEB_UA },
     ];
     for (const cl of clients) {
@@ -616,7 +668,7 @@
         );
       }
       if (res.status === 200) {
-        const items = extractVideosFromInnerTube(JSON.parse(res.body), limit);
+        const items = extractVideosFromInnerTube(JSON.parse(res.body), limit, allowShort);
         if (items.length) return items;
       }
     }
@@ -713,7 +765,7 @@
     return results;
   }
 
-  async function requestPlayerClient(vid, visitorData, clientConfig, ua) {
+  async function requestPlayerClient(vid, visitorData, clientConfig, ua, extraHeaders = {}) {
     const res = await nativeHttpPostJson(
       "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
       {
@@ -732,6 +784,7 @@
       {
         "User-Agent": ua,
         ...(visitorData ? { "X-Goog-Visitor-Id": visitorData } : {}),
+        ...extraHeaders,
       }
     );
     if (res.status !== 200) {
@@ -746,14 +799,34 @@
   }
 
   async function fetchPlayerWithFallback(vid, visitorData) {
+    // VISIONOS unlocks non-403 seekable adaptive streams (45KB indexRange) & VOD/Live HLS without PoToken caps
     const clients = [
+      {
+        client: {
+          clientName: "VISIONOS",
+          clientVersion: "1.02",
+          deviceMake: "Apple",
+          deviceModel: "RealityDevice17,1",
+          osName: "visionOS",
+          osVersion: "26.5.23O471",
+        },
+        ua: VISIONOS_UA,
+        extraHeaders: {
+          Origin: "https://www.youtube.com",
+          "X-YouTube-Client-Name": "101",
+          "X-YouTube-Client-Version": "1.02",
+        },
+      },
       {
         client: {
           clientName: "ANDROID",
           clientVersion: "20.10.38",
           androidSdkVersion: 34,
+          osName: "Android",
+          osVersion: "14",
         },
         ua: AND_UA,
+        extraHeaders: {},
       },
       {
         client: {
@@ -765,13 +838,20 @@
           osVersion: "18.3.1.22D72",
         },
         ua: IOS_UA,
+        extraHeaders: {},
       },
     ];
 
     let lastErr = null;
     for (const candidate of clients) {
       try {
-        const result = await requestPlayerClient(vid, visitorData, candidate.client, candidate.ua);
+        const result = await requestPlayerClient(
+          vid,
+          visitorData,
+          candidate.client,
+          candidate.ua,
+          candidate.extraHeaders || {}
+        );
         const sd = result.data?.streamingData || {};
         const hasStreams =
           (sd.formats || []).length > 0 || (sd.adaptiveFormats || []).length > 0 || Boolean(sd.hlsManifestUrl);
@@ -1236,20 +1316,20 @@
       const sd = data.streamingData || {};
       const details = data.videoDetails || {};
       const hlsManifest = sd.hlsManifestUrl || "";
-      const isLive = Boolean(details.isLive || details.isLiveContent || hlsManifest);
+      const dur = parseInt(details.lengthSeconds || "0", 10) || 0;
+      const isLive = Boolean(details.isLive || (dur === 0 && Boolean(hlsManifest)));
       const classified = classifyStreams(sd);
       await wrapStreamsWithNativeProxy(classified, ua);
 
-      let hlsUrl = hlsManifest;
+      let hlsUrl = isLive ? hlsManifest : "";
       const p = plugin();
-      if (hlsManifest && p && typeof p.registerHls === "function") {
+      if (isLive && hlsManifest && p && typeof p.registerHls === "function") {
         try {
           const r = await p.registerHls({ url: hlsManifest, headers: { "User-Agent": ua } });
           if (r?.proxyUrl) hlsUrl = r.proxyUrl;
         } catch (_) {}
       }
 
-      const dur = parseInt(details.lengthSeconds || "0", 10) || 0;
       const views = parseInt(details.viewCount || "0", 10) || 0;
       const h = Math.floor(dur / 3600);
       const m = Math.floor((dur % 3600) / 60);
@@ -1370,8 +1450,26 @@
       const vids = videoId && /^[A-Za-z0-9_-]{11}$/.test(videoId) ? [videoId] : ["jNQXAC9IVRw"];
       const data = await tvInnerTubePost("playlist/get_add_to_playlist", { videoIds: vids });
       const playlists = extractPlaylistsFromInnerTube(data);
+      try {
+        const lib = await tvInnerTubePost("browse", { browseId: "FElibrary" });
+        for (const extra of extractPlaylistsFromInnerTube(lib)) {
+          if (!playlists.some((p) => p.id === extra.id)) {
+            playlists.push(extra);
+          } else {
+            const target = playlists.find((p) => p.id === extra.id);
+            if (target && !target.thumbnail && extra.thumbnail) target.thumbnail = extra.thumbnail;
+            if (target && !target.count_text && extra.count_text) target.count_text = extra.count_text;
+          }
+        }
+      } catch (_) {}
+      if (!playlists.some((p) => p.id === "WL")) {
+        playlists.unshift({ id: "WL", title: "Xem sau", privacy: "PRIVATE", contains_selected: false, count_text: "", thumbnail: "" });
+      }
       if (!playlists.some((p) => p.id === "LL")) {
-        playlists.push({ id: "LL", title: "Video đã thích", privacy: "PRIVATE", contains_selected: false, count_text: "", thumbnail: "" });
+        const wlIdx = playlists.findIndex((p) => p.id === "WL");
+        const llObj = { id: "LL", title: "Video đã thích", privacy: "PRIVATE", contains_selected: false, count_text: "", thumbnail: "" };
+        if (wlIdx >= 0) playlists.splice(wlIdx + 1, 0, llObj);
+        else playlists.unshift(llObj);
       }
       return { playlists };
     },
@@ -1380,7 +1478,7 @@
       const pid = String(playlistId || "").trim();
       const browseId = pid.startsWith("VL") ? pid : `VL${pid}`;
       const data = await tvInnerTubePost("browse", { browseId });
-      return { playlist_id: pid, items: extractVideosFromInnerTube(data, 50) };
+      return { playlist_id: pid, items: extractVideosFromInnerTube(data, 60, true) };
     },
 
     async addVideoToYoutubePlaylist(playlistId, videoId, remove = false) {
@@ -1415,7 +1513,31 @@
         });
       }
       const qs = videoData.qualities || [];
-      const pick = qs.find((q) => q.has_audio && q.raw_url) || qs.find((q) => q.raw_url);
+      let pick = qs.find((q) => q.has_audio && q.raw_url);
+      if (!pick && videoData?.id) {
+        // VISIONOS streams are adaptive-only; fetch ANDROID progressive MP4 (itag=18 with audio) on demand for offline video download
+        try {
+          const visitorData = await getVisitorData();
+          const resAnd = await requestPlayerClient(
+            videoData.id,
+            visitorData,
+            { clientName: "ANDROID", clientVersion: "20.10.38", androidSdkVersion: 34, osName: "Android", osVersion: "14" },
+            AND_UA
+          );
+          const fmts = resAnd.data?.streamingData?.formats || [];
+          const prog = fmts.find((f) => f.url && String(f.mimeType || "").includes("mp4")) || fmts.find((f) => f.url);
+          if (prog?.url) {
+            pick = {
+              raw_url: prog.url,
+              raw_ua: AND_UA,
+              raw_mime: (prog.mimeType || "video/mp4").split(";")[0].trim(),
+              raw_len: Number(prog.contentLength || 0) || 0,
+              height: prog.height || 360,
+            };
+          }
+        } catch (_) {}
+      }
+      if (!pick) pick = qs.find((q) => q.raw_url);
       if (!pick?.raw_url) throw new Error("Không tìm thấy luồng video MP4 trực tiếp để tải.");
       return p.downloadToDevice({
         url: pick.raw_url,
@@ -1590,11 +1712,11 @@
     },
 
     async getYoutubeHistory() {
-      return { items: await fetchInnerTubeBrowse("FEhistory", 36) };
+      return { items: await fetchInnerTubeBrowse("FEhistory", 50, true) };
     },
 
     async getYoutubeSubscriptions() {
-      return { items: await fetchInnerTubeBrowse("FEsubscriptions", 28) };
+      return { items: await fetchInnerTubeBrowse("FEsubscriptions", 36, true) };
     },
   };
 

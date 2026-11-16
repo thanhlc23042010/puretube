@@ -4,9 +4,9 @@
     category: "all",
     searchQuery: "",
     activeSubChannel: null,
-    subsSource: "local", // local | youtube
-    playlistsSource: "local", // local | youtube
-    historySource: "local", // local | youtube
+    ytPlaylistItemsMap: {},
+    expandedYtPlaylists: { WL: true, LL: true },
+    watchLaterActive: false,
     queue: [],
     queueIndex: -1,
     queueName: "",
@@ -281,6 +281,13 @@
     document.getElementById("watch-channel-initial").classList.remove("hidden");
     document.getElementById("watch-like-btn")?.classList.remove("active");
     document.getElementById("watch-dislike-btn")?.classList.remove("active");
+    state.watchLaterActive = false;
+    const wlBtnReset = document.getElementById("watch-watchlater-btn");
+    if (wlBtnReset) {
+      wlBtnReset.classList.remove("active");
+      const wlSpan = wlBtnReset.querySelector("span");
+      if (wlSpan) wlSpan.textContent = "Xem sau";
+    }
     document.getElementById("watch-like-count").textContent = "Thích";
     document.getElementById("comments-header-title").textContent = "Bình luận";
     document.getElementById("comments-load-more-btn")?.classList.add("hidden");
@@ -333,6 +340,25 @@
 
       if (state.queue.length && state.queueIndex + 1 < state.queue.length) {
         PureAPI.prefetchVideo(state.queue[state.queueIndex + 1].id);
+      }
+
+      // Check Watch Later membership silently when logged in
+      if (state.authStatus?.logged_in) {
+        PureAPI.getYoutubePlaylists(full.id)
+          .then((plRes) => {
+            if (!state.currentVideoFull || state.currentVideoFull.id !== full.id) return;
+            const wlPl = (plRes?.playlists || []).find((p) => p.id === "WL");
+            if (wlPl?.contains_selected) {
+              state.watchLaterActive = true;
+              const wlBtn = document.getElementById("watch-watchlater-btn");
+              if (wlBtn) {
+                wlBtn.classList.add("active");
+                const sp = wlBtn.querySelector("span");
+                if (sp) sp.textContent = "Đã thêm Xem sau";
+              }
+            }
+          })
+          .catch(() => {});
       }
 
       // Fetch SponsorBlock, channel/like metadata, comments token & related asynchronously
@@ -610,60 +636,48 @@
   async function renderSubscriptionsView() {
     const pillsEl = document.getElementById("subs-channel-pills");
     const contentEl = document.getElementById("subs-content");
-    document.querySelectorAll("#subs-source-tabs .source-tab").forEach((b) => {
-      b.classList.toggle("active", b.dataset.subsSource === state.subsSource);
-    });
+    const statusPill = document.getElementById("subs-sync-status");
+    const logged = Boolean(state.authStatus?.logged_in);
 
-    if (state.subsSource === "youtube") {
-      pillsEl.innerHTML = "";
-      if (!state.authStatus?.logged_in) {
-        contentEl.innerHTML = `
-          <div class="empty-state">
-            <h2>Chưa đăng nhập Tài khoản Google</h2>
-            <p>Đăng nhập tài khoản Google/YouTube để đồng bộ danh sách video mới từ các kênh bạn đang theo dõi trên YouTube.</p>
-            <button type="button" class="btn-primary" id="subs-open-auth-btn">Đăng nhập Google ngay</button>
-          </div>`;
-        document.getElementById("subs-open-auth-btn")?.addEventListener("click", openAuthDialog);
-        return;
-      }
-
-      contentEl.innerHTML = `<div class="video-grid" id="subs-yt-grid"></div>`;
-      const grid = document.getElementById("subs-yt-grid");
-      renderSkeletonGrid(grid, 8);
-      try {
-        const data = await PureAPI.getYoutubeSubscriptions();
-        renderVideoGrid(grid, data.items || []);
-      } catch (err) {
-        grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><p>${escapeHtml(err.message)}</p></div>`;
-      }
-      return;
+    if (statusPill) {
+      statusPill.classList.toggle("hidden", !logged);
+      if (logged) statusPill.textContent = `Đồng bộ · ${state.authStatus.account_name || "YouTube"}`;
     }
 
-    const subs = Store.state.subscriptions;
-    if (!subs.length) {
+    const subs = Store.state.subscriptions || [];
+    if (!logged && !subs.length) {
       pillsEl.innerHTML = "";
       contentEl.innerHTML = `
         <div class="empty-state">
-          <h2>Chưa có kênh đăng ký trên máy</h2>
-          <p>Bấm nút "Đăng ký" khi xem video hoặc chuyển sang mục "Đồng bộ YouTube" ở phía trên sau khi đăng nhập Google.</p>
-          <button type="button" class="btn-primary" id="subs-go-home-btn">Khám phá video ngay</button>
+          <h2>Chưa có kênh đăng ký</h2>
+          <p>Đăng nhập Tài khoản Google để tự động đồng bộ toàn bộ kênh bạn đang theo dõi từ YouTube, hoặc bấm "Đăng ký" khi xem bất kỳ video nào.</p>
+          <button type="button" class="btn-primary" id="subs-open-auth-btn">Liên kết Google để đồng bộ</button>
         </div>`;
-      document.getElementById("subs-go-home-btn")?.addEventListener("click", () => switchTab("home"));
+      document.getElementById("subs-open-auth-btn")?.addEventListener("click", openAuthDialog);
       return;
     }
 
-    if (!state.activeSubChannel || !subs.some((s) => s.name === state.activeSubChannel)) {
-      state.activeSubChannel = subs[0].name;
+    const defaultChannel = logged ? "__ALL_YT__" : (subs[0]?.name || "");
+    if (
+      !state.activeSubChannel ||
+      (state.activeSubChannel === "__ALL_YT__" && !logged) ||
+      (state.activeSubChannel !== "__ALL_YT__" && !subs.some((s) => s.name === state.activeSubChannel))
+    ) {
+      state.activeSubChannel = defaultChannel;
     }
 
-    pillsEl.innerHTML = subs
-      .map(
-        (s) => `
-      <button type="button" class="channel-pill ${s.name === state.activeSubChannel ? "active" : ""}" data-ch="${escapeHtml(s.name)}">
-        <span>${escapeHtml(s.name)}</span>
-      </button>`
-      )
-      .join("");
+    const pillButtons = [];
+    if (logged) {
+      pillButtons.push(
+        `<button type="button" class="channel-pill ${state.activeSubChannel === "__ALL_YT__" ? "active" : ""}" data-ch="__ALL_YT__"><span>Tất cả kênh YouTube</span></button>`
+      );
+    }
+    subs.forEach((s) => {
+      pillButtons.push(
+        `<button type="button" class="channel-pill ${s.name === state.activeSubChannel ? "active" : ""}" data-ch="${escapeHtml(s.name)}"><span>${escapeHtml(s.name)}</span></button>`
+      );
+    });
+    pillsEl.innerHTML = pillButtons.join("");
 
     pillsEl.querySelectorAll(".channel-pill").forEach((pill) => {
       pill.addEventListener("click", () => {
@@ -672,13 +686,22 @@
       });
     });
 
-    contentEl.innerHTML = `<div class="video-grid" id="subs-video-grid"></div>`;
+    const bannerHtml = !logged
+      ? `<div class="sync-inline-banner"><span>Muốn tự đồng bộ các kênh đang theo dõi trên YouTube?</span><button type="button" class="btn-primary btn-sm" id="subs-inline-auth-btn">Liên kết Google</button></div>`
+      : "";
+    contentEl.innerHTML = `${bannerHtml}<div class="video-grid" id="subs-video-grid"></div>`;
+    document.getElementById("subs-inline-auth-btn")?.addEventListener("click", openAuthDialog);
     const grid = document.getElementById("subs-video-grid");
-    renderSkeletonGrid(grid, 6);
+    renderSkeletonGrid(grid, 8);
 
     try {
-      const data = await PureAPI.getChannel(state.activeSubChannel);
-      renderVideoGrid(grid, data.items || []);
+      if (state.activeSubChannel === "__ALL_YT__") {
+        const data = await PureAPI.getYoutubeSubscriptions();
+        renderVideoGrid(grid, data.items || []);
+      } else {
+        const data = await PureAPI.getChannel(state.activeSubChannel);
+        renderVideoGrid(grid, data.items || []);
+      }
     } catch (err) {
       grid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1;"><p>${escapeHtml(err.message)}</p></div>`;
     }
@@ -872,104 +895,243 @@
 
   async function renderPlaylistsView() {
     const container = document.getElementById("playlists-content");
-    document.querySelectorAll("#playlists-source-tabs .source-tab").forEach((b) => {
-      b.classList.toggle("active", b.dataset.plSource === state.playlistsSource);
-    });
+    const statusPill = document.getElementById("playlists-sync-status");
+    const logged = Boolean(state.authStatus?.logged_in);
 
-    if (state.playlistsSource === "youtube") {
-      if (!state.authStatus?.logged_in) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <h2>Chưa đăng nhập Tài khoản Google</h2>
-            <p>Đăng nhập Google để xem và phát tất cả danh sách phát YouTube (Xem sau, Video đã thích, Playlist cá nhân) đồng bộ từ tài khoản của bạn.</p>
-            <button type="button" class="btn-primary" id="pl-open-auth-btn">Đăng nhập Google ngay</button>
-          </div>`;
-        document.getElementById("pl-open-auth-btn")?.addEventListener("click", openAuthDialog);
-        return;
-      }
-      container.innerHTML = `<div class="skeleton-box skeleton-line" style="height:80px"></div>`;
+    if (statusPill) {
+      statusPill.classList.toggle("hidden", !logged);
+      if (logged) statusPill.textContent = `Đồng bộ · ${state.authStatus.account_name || "YouTube"}`;
+    }
+
+    let ytPlaylists = [];
+    let ytError = "";
+    if (logged) {
+      container.innerHTML = `<div class="skeleton-box skeleton-line" style="height:100px"></div>`;
       try {
         const res = await PureAPI.getYoutubePlaylists();
-        const pls = res.playlists || [];
-        if (!pls.length) {
-          container.innerHTML = `<div class="empty-state"><p>Không tìm thấy danh sách phát nào trên tài khoản YouTube.</p></div>`;
-          return;
-        }
-        container.innerHTML = `<div class="playlist-grid">${pls
-          .map(
-            (pl) => `
-          <article class="playlist-card">
-            <div class="playlist-card-head">
-              <div>
-                <h2 class="playlist-card-title">${escapeHtml(pl.title)}</h2>
-                <div class="playlist-card-count">${escapeHtml(pl.privacy || "YouTube Playlist")}</div>
-              </div>
-              <button type="button" class="btn-primary btn-sm yt-pl-play-btn" data-yt-pl="${escapeHtml(pl.id)}" data-yt-title="${escapeHtml(pl.title)}">Phát tất cả</button>
-            </div>
-          </article>`
-          )
-          .join("")}</div>`;
-        container.querySelectorAll(".yt-pl-play-btn").forEach((btn) => {
-          btn.addEventListener("click", () => playYoutubePlaylist(btn.dataset.ytPl, btn.dataset.ytTitle));
-        });
+        ytPlaylists = res.playlists || [];
       } catch (err) {
-        container.innerHTML = `<div class="empty-state"><p>${escapeHtml(err.message)}</p></div>`;
+        ytError = err.message || "Không tải được playlist từ YouTube.";
       }
-      return;
     }
 
-    const playlists = Store.state.playlists;
+    const localPlaylists = (Store.state.playlists || []).filter((pl) => {
+      if (!logged) return true;
+      const lower = String(pl.name || "").trim().toLowerCase();
+      if ((lower === "xem sau" || lower === "video đã thích") && (!pl.items || !pl.items.length)) {
+        return false;
+      }
+      return true;
+    });
 
-    if (!playlists.length) {
+    if (!ytPlaylists.length && !localPlaylists.length) {
       container.innerHTML = `
         <div class="empty-state">
-          <h2>Chưa có danh sách phát</h2>
-          <p>Tạo danh sách phát nhạc hoặc video để nghe chạy nền liên tục trên iPhone và Android.</p>
+          <h2>Chưa có danh sách phát nào</h2>
+          <p>${ytError ? escapeHtml(ytError) : "Liên kết Google để đồng bộ Xem sau & Video đã thích từ YouTube, hoặc tạo playlist mới trên máy."}</p>
+          ${!logged ? `<button type="button" class="btn-primary" id="pl-open-auth-btn">Liên kết Google ngay</button>` : ""}
         </div>`;
+      document.getElementById("pl-open-auth-btn")?.addEventListener("click", openAuthDialog);
       return;
     }
 
-    container.innerHTML = `<div class="playlist-grid">${playlists
-      .map(
-        (pl) => `
-      <article class="playlist-card" data-pl-id="${escapeHtml(pl.id)}">
-        <div class="playlist-card-head">
-          <div>
-            <h2 class="playlist-card-title">${escapeHtml(pl.name)}</h2>
-            <div class="playlist-card-count">${pl.items.length} video</div>
-          </div>
-          <div style="display:flex;gap:6px;">
+    const bannerHtml = !logged
+      ? `<div class="sync-inline-banner"><span>Liên kết Tài khoản Google để đồng bộ trực tiếp <strong>Xem sau</strong>, <strong>Video đã thích</strong> & playlist YouTube vào chung màn hình này.</span><button type="button" class="btn-primary btn-sm" id="pl-open-auth-btn">Liên kết Google</button></div>`
+      : ytError
+        ? `<div class="sync-inline-banner"><span>Không đồng bộ được playlist YouTube lúc này: ${escapeHtml(ytError)}</span></div>`
+        : "";
+
+    const renderYtPreviewHtml = (pid) => {
+      if (!state.expandedYtPlaylists[pid]) {
+        return `<p class="settings-desc" style="margin:4px 0 0;">Bấm "Xem video" để mở danh sách video đã đồng bộ.</p>`;
+      }
+      const cached = state.ytPlaylistItemsMap[pid];
+      if (!cached) {
+        return `<div class="skeleton-box skeleton-line" style="height:46px;"></div>`;
+      }
+      if (!cached.length) {
+        return `<p class="settings-desc" style="margin:4px 0 0;">Danh sách này hiện đang trống.</p>`;
+      }
+      return cached
+        .map(
+          (v, idx) => `
+          <div class="playlist-item-row">
+            <img src="${escapeHtml(v.thumbnail)}" alt="" loading="lazy" />
+            <button type="button" class="playlist-item-title yt-pl-item-play" data-yt-pl="${escapeHtml(pid)}" data-idx="${idx}" style="text-align:left;">
+              ${escapeHtml(v.title)}
+            </button>
             ${
-              pl.items.length > 0
-                ? `<button type="button" class="btn-primary btn-sm pl-play-all" data-pl-id="${escapeHtml(pl.id)}">Phát tất cả</button>`
+              pid !== "LL"
+                ? `<button type="button" class="icon-btn yt-pl-item-remove" data-yt-pl="${escapeHtml(pid)}" data-vid="${escapeHtml(v.id)}" aria-label="Xóa khỏi playlist YouTube">
+                    <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                  </button>`
                 : ""
             }
-            <button type="button" class="btn-subtle btn-sm danger-text pl-delete" data-pl-id="${escapeHtml(pl.id)}" title="Xóa danh sách">Xóa</button>
+          </div>`
+        )
+        .join("");
+    };
+
+    const ytCardsHtml = ytPlaylists
+      .map(
+        (pl) => `
+        <article class="playlist-card" data-yt-pl-card="${escapeHtml(pl.id)}">
+          <div class="playlist-card-head">
+            <div>
+              <h2 class="playlist-card-title">${escapeHtml(pl.title)} <span class="playlist-source-badge">YouTube</span></h2>
+              <div class="playlist-card-count" id="yt-pl-count-${escapeHtml(pl.id)}">${
+                state.ytPlaylistItemsMap[pl.id]
+                  ? `${state.ytPlaylistItemsMap[pl.id].length} video`
+                  : escapeHtml(pl.count_text || pl.privacy || "Đồng bộ YouTube")
+              }</div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+              <button type="button" class="btn-subtle btn-sm yt-pl-toggle-btn" data-yt-pl="${escapeHtml(pl.id)}">${
+                state.expandedYtPlaylists[pl.id] ? "Thu gọn" : "Xem video"
+              }</button>
+              <button type="button" class="btn-primary btn-sm yt-pl-play-btn" data-yt-pl="${escapeHtml(pl.id)}" data-yt-title="${escapeHtml(pl.title)}">Phát tất cả</button>
+            </div>
           </div>
-        </div>
-        <div class="playlist-items-preview">
-          ${
-            pl.items.length
-              ? pl.items
-                  .map(
-                    (v) => `
-                <div class="playlist-item-row">
-                  <img src="${escapeHtml(v.thumbnail)}" alt="" />
-                  <button type="button" class="playlist-item-title pl-item-play" data-pl-id="${escapeHtml(pl.id)}" data-vid="${escapeHtml(v.id)}" style="text-align:left;">
-                    ${escapeHtml(v.title)}
-                  </button>
-                  <button type="button" class="icon-btn pl-item-remove" data-pl-id="${escapeHtml(pl.id)}" data-vid="${escapeHtml(v.id)}" aria-label="Xóa khỏi playlist">
-                    <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                  </button>
-                </div>`
-                  )
-                  .join("")
-              : `<p class="settings-desc">Danh sách trống. Mở bất kỳ video nào và nhấn "Lưu Playlist".</p>`
-          }
-        </div>
-      </article>`
+          <div class="playlist-items-preview" id="yt-pl-preview-${escapeHtml(pl.id)}">
+            ${renderYtPreviewHtml(pl.id)}
+          </div>
+        </article>`
       )
-      .join("")}</div>`;
+      .join("");
+
+    const localCardsHtml = localPlaylists
+      .map(
+        (pl) => `
+        <article class="playlist-card" data-pl-id="${escapeHtml(pl.id)}">
+          <div class="playlist-card-head">
+            <div>
+              <h2 class="playlist-card-title">${escapeHtml(pl.name)} <span class="playlist-source-badge local">Trên máy</span></h2>
+              <div class="playlist-card-count">${pl.items.length} video</div>
+            </div>
+            <div style="display:flex;gap:6px;">
+              ${
+                pl.items.length > 0
+                  ? `<button type="button" class="btn-primary btn-sm pl-play-all" data-pl-id="${escapeHtml(pl.id)}">Phát tất cả</button>`
+                  : ""
+              }
+              <button type="button" class="btn-subtle btn-sm danger-text pl-delete" data-pl-id="${escapeHtml(pl.id)}" title="Xóa danh sách">Xóa</button>
+            </div>
+          </div>
+          <div class="playlist-items-preview">
+            ${
+              pl.items.length
+                ? pl.items
+                    .map(
+                      (v) => `
+                  <div class="playlist-item-row">
+                    <img src="${escapeHtml(v.thumbnail)}" alt="" />
+                    <button type="button" class="playlist-item-title pl-item-play" data-pl-id="${escapeHtml(pl.id)}" data-vid="${escapeHtml(v.id)}" style="text-align:left;">
+                      ${escapeHtml(v.title)}
+                    </button>
+                    <button type="button" class="icon-btn pl-item-remove" data-pl-id="${escapeHtml(pl.id)}" data-vid="${escapeHtml(v.id)}" aria-label="Xóa khỏi playlist">
+                      <svg class="icon" viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                  </div>`
+                    )
+                    .join("")
+                : `<p class="settings-desc">Danh sách trống. Mở bất kỳ video nào và nhấn "Lưu Playlist".</p>`
+            }
+          </div>
+        </article>`
+      )
+      .join("");
+
+    container.innerHTML = `${bannerHtml}<div class="playlist-grid">${ytCardsHtml}${localCardsHtml}</div>`;
+    document.getElementById("pl-open-auth-btn")?.addEventListener("click", openAuthDialog);
+
+    const bindYtPreviewEvents = (previewBox) => {
+      if (!previewBox) return;
+      previewBox.querySelectorAll(".yt-pl-item-play").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const pid = btn.dataset.ytPl;
+          const idx = parseInt(btn.dataset.idx, 10) || 0;
+          const items = state.ytPlaylistItemsMap[pid] || [];
+          const plMeta = ytPlaylists.find((x) => x.id === pid);
+          if (items.length && items[idx]) {
+            state.queue = [...items];
+            state.queueIndex = idx;
+            state.queueName = plMeta?.title || "YouTube Playlist";
+            openWatchVideo(items[idx]);
+          }
+        });
+      });
+      previewBox.querySelectorAll(".yt-pl-item-remove").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const pid = btn.dataset.ytPl;
+          const vid = btn.dataset.vid;
+          btn.disabled = true;
+          try {
+            await PureAPI.addVideoToYoutubePlaylist(pid, vid, true);
+            state.ytPlaylistItemsMap[pid] = (state.ytPlaylistItemsMap[pid] || []).filter((x) => x.id !== vid);
+            previewBox.innerHTML = renderYtPreviewHtml(pid);
+            bindYtPreviewEvents(previewBox);
+            const cntEl = document.getElementById(`yt-pl-count-${pid}`);
+            if (cntEl) cntEl.textContent = `${state.ytPlaylistItemsMap[pid].length} video`;
+            window.showAppToast("Đã gỡ video khỏi danh sách phát YouTube.");
+          } catch (err) {
+            btn.disabled = false;
+            window.showAppToast(err.message);
+          }
+        });
+      });
+    };
+
+    const hydrateYtPlaylist = async (pl) => {
+      const previewBox = document.getElementById(`yt-pl-preview-${pl.id}`);
+      const cntEl = document.getElementById(`yt-pl-count-${pl.id}`);
+      if (!previewBox || !state.expandedYtPlaylists[pl.id]) return;
+      if (!state.ytPlaylistItemsMap[pl.id]) {
+        try {
+          const d = await PureAPI.getYoutubePlaylistItems(pl.id);
+          state.ytPlaylistItemsMap[pl.id] = d.items || [];
+        } catch (err) {
+          if (state.activeTab === "playlists") {
+            previewBox.innerHTML = `<p class="settings-desc">${escapeHtml(err.message)}</p>`;
+          }
+          return;
+        }
+      }
+      if (state.activeTab !== "playlists") return;
+      previewBox.innerHTML = renderYtPreviewHtml(pl.id);
+      if (cntEl) cntEl.textContent = `${state.ytPlaylistItemsMap[pl.id].length} video`;
+      bindYtPreviewEvents(previewBox);
+    };
+
+    ytPlaylists.forEach((pl) => {
+      const box = document.getElementById(`yt-pl-preview-${pl.id}`);
+      if (state.ytPlaylistItemsMap[pl.id]) bindYtPreviewEvents(box);
+      if (state.expandedYtPlaylists[pl.id] && !state.ytPlaylistItemsMap[pl.id]) {
+        hydrateYtPlaylist(pl);
+      }
+    });
+
+    container.querySelectorAll(".yt-pl-toggle-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const pid = btn.dataset.ytPl;
+        const nextOpen = !state.expandedYtPlaylists[pid];
+        state.expandedYtPlaylists[pid] = nextOpen;
+        btn.textContent = nextOpen ? "Thu gọn" : "Xem video";
+        const box = document.getElementById(`yt-pl-preview-${pid}`);
+        if (box) {
+          box.innerHTML = renderYtPreviewHtml(pid);
+          if (nextOpen && !state.ytPlaylistItemsMap[pid]) {
+            const pl = ytPlaylists.find((x) => x.id === pid);
+            if (pl) hydrateYtPlaylist(pl);
+          } else {
+            bindYtPreviewEvents(box);
+          }
+        }
+      });
+    });
+
+    container.querySelectorAll(".yt-pl-play-btn").forEach((btn) => {
+      btn.addEventListener("click", () => playYoutubePlaylist(btn.dataset.ytPl, btn.dataset.ytTitle));
+    });
 
     container.querySelectorAll(".pl-play-all").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -1015,47 +1177,62 @@
   async function renderHistoryView() {
     const container = document.getElementById("history-content");
     const clearBtn = document.getElementById("clear-history-btn");
-    document.querySelectorAll("#history-source-tabs .source-tab").forEach((b) => {
-      b.classList.toggle("active", b.dataset.historySource === state.historySource);
-    });
+    const statusPill = document.getElementById("history-sync-status");
+    const logged = Boolean(state.authStatus?.logged_in);
+    const localItems = Store.state.history || [];
 
-    if (state.historySource === "youtube") {
-      clearBtn.classList.add("hidden");
-      if (!state.authStatus?.logged_in) {
-        container.innerHTML = `
-          <div class="empty-state">
-            <h2>Chưa liên kết Tài khoản Google</h2>
-            <p>Đăng nhập tài khoản Google để xem toàn bộ lịch sử xem YouTube của bạn từ điện thoại, TV hay máy tính ngay trên PureTube (hoàn toàn không quảng cáo).</p>
-            <button type="button" class="btn-primary" id="history-open-auth-btn">Đăng nhập Google để đồng bộ</button>
-          </div>`;
-        document.getElementById("history-open-auth-btn")?.addEventListener("click", openAuthDialog);
-        return;
-      }
+    if (statusPill) {
+      statusPill.classList.toggle("hidden", !logged);
+      if (logged) statusPill.textContent = `Đồng bộ · ${state.authStatus.account_name || "YouTube"}`;
+    }
+    clearBtn.classList.toggle("hidden", !localItems.length);
+    clearBtn.textContent = logged ? "Xóa lịch sử cục bộ" : "Xóa lịch sử";
 
-      container.innerHTML = `<div class="video-grid" id="yt-history-grid"></div>`;
-      const grid = document.getElementById("yt-history-grid");
+    if (logged) {
+      container.innerHTML = `<div class="video-grid" id="history-grid"></div>`;
+      const grid = document.getElementById("history-grid");
       renderSkeletonGrid(grid, 8);
       try {
         const data = await PureAPI.getYoutubeHistory();
-        renderVideoGrid(grid, data.items || []);
+        const ytItems = data.items || [];
+        const merged = [];
+        const seen = new Set();
+        for (const item of [...localItems, ...ytItems]) {
+          if (item?.id && !seen.has(item.id)) {
+            seen.add(item.id);
+            merged.push(item);
+          }
+        }
+        renderVideoGrid(grid, merged);
       } catch (err) {
-        grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><h2>Không đồng bộ được lịch sử</h2><p>${escapeHtml(err.message)}</p></div>`;
+        if (localItems.length) {
+          renderVideoGrid(grid, localItems);
+        } else {
+          grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><h2>Không đồng bộ được lịch sử</h2><p>${escapeHtml(err.message)}</p></div>`;
+        }
       }
       return;
     }
 
-    clearBtn.classList.remove("hidden");
-    const items = Store.state.history;
-    if (!items.length) {
+    if (!localItems.length) {
       container.innerHTML = `
         <div class="empty-state">
-          <h2>Lịch sử xem trên PureTube đang trống</h2>
-          <p>Các video bạn đã phát sẽ được lưu tại đây, hoặc bạn có thể chuyển sang tab "Tài khoản YouTube" để xem lịch sử từ tài khoản Google.</p>
+          <h2>Lịch sử xem đang trống</h2>
+          <p>Video bạn xem trên PureTube sẽ hiển thị tại đây. Liên kết Google để đồng bộ trực tiếp lịch sử YouTube từ điện thoại & máy tính.</p>
+          <button type="button" class="btn-primary" id="history-open-auth-btn">Liên kết Google để đồng bộ</button>
         </div>`;
+      document.getElementById("history-open-auth-btn")?.addEventListener("click", openAuthDialog);
       return;
     }
-    container.innerHTML = `<div class="video-grid" id="history-grid"></div>`;
-    renderVideoGrid(document.getElementById("history-grid"), items);
+
+    container.innerHTML = `
+      <div class="sync-inline-banner">
+        <span>Liên kết Google để gộp chung lịch sử xem từ tài khoản YouTube của bạn vào đây.</span>
+        <button type="button" class="btn-primary btn-sm" id="history-open-auth-btn">Liên kết Google</button>
+      </div>
+      <div class="video-grid" id="history-grid"></div>`;
+    document.getElementById("history-open-auth-btn")?.addEventListener("click", openAuthDialog);
+    renderVideoGrid(document.getElementById("history-grid"), localItems);
   }
 
   function renderSettingsView() {
@@ -1336,9 +1513,16 @@
 
     const completeSuccess = async (noticeMsg) => {
       stopPolling();
+      state.ytPlaylistItemsMap = {};
       await refreshAuthStatus();
       if (state.activeTab === "home" && !state.searchQuery) {
         loadTrending(state.category);
+      } else if (state.activeTab === "history") {
+        renderHistoryView();
+      } else if (state.activeTab === "playlists") {
+        renderPlaylistsView();
+      } else if (state.activeTab === "subscriptions") {
+        renderSubscriptionsView();
       }
       window.showAppToast(noticeMsg);
       renderBody({ type: "success", text: noticeMsg });
@@ -1481,13 +1665,11 @@
 
       document.getElementById("auth-goto-history-btn")?.addEventListener("click", () => {
         dialog.close();
-        state.historySource = "youtube";
         switchTab("history");
       });
 
       document.getElementById("auth-goto-subs-btn")?.addEventListener("click", () => {
         dialog.close();
-        state.subsSource = "youtube";
         switchTab("subscriptions");
       });
 
@@ -1698,9 +1880,20 @@
       body.querySelectorAll(".yt-pl-dialog-cb").forEach((cb) => {
         cb.addEventListener("change", async () => {
           const add = cb.checked;
+          const pid = cb.dataset.ytPlId;
           cb.disabled = true;
           try {
-            await PureAPI.addVideoToYoutubePlaylist(cb.dataset.ytPlId, video.id, !add);
+            await PureAPI.addVideoToYoutubePlaylist(pid, video.id, !add);
+            delete state.ytPlaylistItemsMap[pid];
+            if (pid === "WL") {
+              state.watchLaterActive = add;
+              const wlBtn = document.getElementById("watch-watchlater-btn");
+              if (wlBtn) {
+                wlBtn.classList.toggle("active", add);
+                const sp = wlBtn.querySelector("span");
+                if (sp) sp.textContent = add ? "Đã thêm Xem sau" : "Xem sau";
+              }
+            }
             window.showAppToast(add ? "Đã lưu lên playlist YouTube của bạn." : "Đã gỡ khỏi playlist YouTube.");
           } catch (err) {
             cb.checked = !add;
@@ -1745,28 +1938,6 @@
     });
     document.querySelectorAll("[data-nav='home']").forEach((btn) => {
       btn.addEventListener("click", () => switchTab("home"));
-    });
-
-    // Source tabs for History & Subscriptions
-    document.getElementById("history-source-tabs").addEventListener("click", (e) => {
-      const tab = e.target.closest("[data-history-source]");
-      if (!tab) return;
-      state.historySource = tab.dataset.historySource;
-      renderHistoryView();
-    });
-
-    document.getElementById("subs-source-tabs").addEventListener("click", (e) => {
-      const tab = e.target.closest("[data-subs-source]");
-      if (!tab) return;
-      state.subsSource = tab.dataset.subsSource;
-      renderSubscriptionsView();
-    });
-
-    document.getElementById("playlists-source-tabs")?.addEventListener("click", (e) => {
-      const tab = e.target.closest("[data-pl-source]");
-      if (!tab) return;
-      state.playlistsSource = tab.dataset.plSource;
-      renderPlaylistsView();
     });
 
     document.getElementById("channel-tabs-strip")?.addEventListener("click", (e) => {
@@ -1936,7 +2107,8 @@
       document.getElementById("watch-dislike-btn")?.classList.toggle("active", next === "dislike");
       try {
         await PureAPI.reactVideo(state.currentVideoFull.id, next);
-        window.showAppToast(next === "like" ? "Đã thích video lên YouTube." : next === "dislike" ? "Đã đánh dấu Không thích." : "Đã bỏ tương tác.");
+        delete state.ytPlaylistItemsMap.LL;
+        window.showAppToast(next === "like" ? "Đã thích video & đồng bộ YouTube." : next === "dislike" ? "Đã đánh dấu Không thích." : "Đã bỏ tương tác.");
       } catch (err) {
         window.showAppToast(err.message);
       }
@@ -1961,6 +2133,39 @@
         } catch (_) {}
       }
       window.showAppToast(added ? `Đã đăng ký kênh ${cname}` : "Đã hủy đăng ký kênh");
+    });
+
+    document.getElementById("watch-watchlater-btn")?.addEventListener("click", async () => {
+      if (!state.currentVideoFull || !state.currentVideoSummary) return;
+      const btn = document.getElementById("watch-watchlater-btn");
+      const nextAdd = !state.watchLaterActive;
+      if (state.authStatus?.logged_in) {
+        btn.disabled = true;
+        try {
+          await PureAPI.addVideoToYoutubePlaylist("WL", state.currentVideoFull.id, !nextAdd);
+          delete state.ytPlaylistItemsMap.WL;
+          state.watchLaterActive = nextAdd;
+          btn.classList.toggle("active", nextAdd);
+          const sp = btn.querySelector("span");
+          if (sp) sp.textContent = nextAdd ? "Đã thêm Xem sau" : "Xem sau";
+          window.showAppToast(nextAdd ? "Đã lưu vào Xem sau trên YouTube." : "Đã gỡ khỏi Xem sau.");
+        } catch (err) {
+          window.showAppToast(err.message || "Không cập nhật được Xem sau.");
+        } finally {
+          btn.disabled = false;
+        }
+        return;
+      }
+      let wlLocal = (Store.state.playlists || []).find((p) => String(p.name || "").trim().toLowerCase() === "xem sau");
+      if (!wlLocal) wlLocal = Store.createPlaylist("Xem sau");
+      if (wlLocal) {
+        const added = Store.toggleVideoInPlaylist(wlLocal.id, state.currentVideoSummary);
+        state.watchLaterActive = added;
+        btn.classList.toggle("active", added);
+        const sp = btn.querySelector("span");
+        if (sp) sp.textContent = added ? "Đã thêm Xem sau" : "Xem sau";
+        window.showAppToast(added ? "Đã lưu vào Xem sau (liên kết Google để đồng bộ YouTube)." : "Đã gỡ khỏi Xem sau.");
+      }
     });
 
     document.getElementById("watch-save-playlist-btn").addEventListener("click", openPlaylistDialog);
@@ -2074,7 +2279,7 @@
     updateShieldStatsUI();
     bindGlobalEvents();
 
-    refreshAuthStatus();
+    await refreshAuthStatus();
     try {
       state.serverInfo = await PureAPI.getInfo();
     } catch (_) {}

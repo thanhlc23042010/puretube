@@ -194,10 +194,7 @@
         <section id="view-subscriptions" class="page-view">
           <div class="section-header">
             <h1 class="section-title">Kênh đã đăng ký</h1>
-            <div class="source-tabs" id="subs-source-tabs">
-              <button type="button" class="source-tab active" data-subs-source="local">Trên máy</button>
-              <button type="button" class="source-tab" data-subs-source="youtube">Đồng bộ YouTube</button>
-            </div>
+            <span class="sync-pill-label hidden" id="subs-sync-status"></span>
           </div>
           <div class="channel-pills" id="subs-channel-pills"></div>
           <div id="subs-content"></div>
@@ -206,12 +203,9 @@
         <!-- PLAYLISTS VIEW -->
         <section id="view-playlists" class="page-view">
           <div class="section-header">
-            <h1 class="section-title">Danh sách phát của bạn</h1>
+            <h1 class="section-title">Thư viện & Danh sách phát</h1>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <div class="source-tabs" id="playlists-source-tabs">
-                <button type="button" class="source-tab active" data-pl-source="local">Trên máy</button>
-                <button type="button" class="source-tab" data-pl-source="youtube">Trên YouTube</button>
-              </div>
+              <span class="sync-pill-label hidden" id="playlists-sync-status"></span>
               <button class="btn-primary btn-sm" id="create-playlist-btn">
                 <svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
                 <span>Tạo mới</span>
@@ -226,10 +220,7 @@
           <div class="section-header">
             <h1 class="section-title">Lịch sử đã xem</h1>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <div class="source-tabs" id="history-source-tabs">
-                <button type="button" class="source-tab active" data-history-source="local">PureTube</button>
-                <button type="button" class="source-tab" data-history-source="youtube">Tài khoản YouTube</button>
-              </div>
+              <span class="sync-pill-label hidden" id="history-sync-status"></span>
               <button class="btn-subtle danger-text" id="clear-history-btn">Xóa lịch sử</button>
             </div>
           </div>
@@ -410,6 +401,10 @@
                         <span>👎</span>
                       </button>
                     </div>
+                    <button type="button" class="btn-action" id="watch-watchlater-btn" title="Lưu vào Xem sau (YouTube)">
+                      <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>
+                      <span>Xem sau</span>
+                    </button>
                     <button type="button" class="btn-action" id="watch-save-playlist-btn">
                       <svg class="icon" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>
                       <span>Lưu Playlist</span>

@@ -640,18 +640,40 @@ def get_visitor_data_sync() -> str:
 
 
 def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
-    """Fast-path InnerTube extractor (ANDROID + IOS fallback, inspired by Morphe & YTLite spoofing)."""
+    """Fast-path InnerTube extractor (VISIONOS primary for seekable 6h adaptive/HLS, ANDROID & IOS fallback)."""
     visitor_data = get_visitor_data_sync()
+    visionos_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 15_7_3) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15"
     candidates = [
+        (
+            {
+                "clientName": "VISIONOS",
+                "clientVersion": "1.02",
+                "deviceMake": "Apple",
+                "deviceModel": "RealityDevice17,1",
+                "osName": "visionOS",
+                "osVersion": "26.5.23O471",
+                "hl": "vi",
+                "gl": "VN",
+            },
+            visionos_ua,
+            {
+                "Origin": "https://www.youtube.com",
+                "X-YouTube-Client-Name": "101",
+                "X-YouTube-Client-Version": "1.02",
+            },
+        ),
         (
             {
                 "clientName": "ANDROID",
                 "clientVersion": "20.10.38",
                 "androidSdkVersion": 34,
+                "osName": "Android",
+                "osVersion": "14",
                 "hl": "vi",
                 "gl": "VN",
             },
             ANDROID_INNERTUBE_UA,
+            {},
         ),
         (
             {
@@ -665,18 +687,20 @@ def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
                 "gl": "VN",
             },
             IOS_INNERTUBE_UA,
+            {},
         ),
     ]
 
     data = None
-    active_ua = ANDROID_INNERTUBE_UA
-    for client_tpl, ua in candidates:
+    active_ua = visionos_ua
+    for client_tpl, ua, extra_hdrs in candidates:
         client_ctx = dict(client_tpl)
         if visitor_data:
             client_ctx["visitorData"] = visitor_data
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
             "User-Agent": ua,
+            **extra_hdrs,
         }
         if visitor_data:
             headers["X-Goog-Visitor-Id"] = visitor_data
@@ -698,7 +722,7 @@ def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
             parsed = resp.json()
             if (parsed.get("playabilityStatus") or {}).get("status") == "OK":
                 sd = parsed.get("streamingData") or {}
-                if sd.get("formats") or sd.get("adaptiveFormats"):
+                if sd.get("formats") or sd.get("adaptiveFormats") or sd.get("hlsManifestUrl"):
                     data = parsed
                     active_ua = ua
                     break
@@ -770,7 +794,8 @@ def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
 
     hls_manifest_url = str(streaming.get("hlsManifestUrl") or "")
     details = data.get("videoDetails") or {}
-    is_live = bool(details.get("isLive") or details.get("isLiveContent"))
+    len_sec = int(details.get("lengthSeconds") or 0)
+    is_live = bool(details.get("isLive")) or (bool(details.get("isLiveContent")) and len_sec == 0)
     if not ytdlp_like_formats and not hls_manifest_url:
         return None
     subtitles: Dict[str, List[Dict[str, str]]] = {}
@@ -865,7 +890,7 @@ def extract_video_sync(video_id: str, force_refresh: bool = False) -> Dict[str, 
         classified = select_best_formats(info.get("formats") or [], video_id)
 
     hls_manifest_url = info.get("hls_manifest_url") or ""
-    is_live = bool(info.get("is_live") or hls_manifest_url)
+    is_live = bool(info.get("is_live"))
 
     chapters = [
         {
@@ -2667,8 +2692,28 @@ async def api_youtube_playlists(video_id: str = Query("")) -> Dict[str, Any]:
     vids = [video_id] if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) else ["jNQXAC9IVRw"]
     data = await innertube_tv_post("playlist/get_add_to_playlist", {"videoIds": vids})
     playlists = extract_playlists_from_innertube(data)
+    try:
+        lib = await innertube_tv_post("browse", {"browseId": "FElibrary"})
+        for extra in extract_playlists_from_innertube(lib):
+            match = next((p for p in playlists if p["id"] == extra["id"]), None)
+            if match:
+                if not match.get("thumbnail") and extra.get("thumbnail"):
+                    match["thumbnail"] = extra["thumbnail"]
+                if not match.get("count_text") and extra.get("count_text"):
+                    match["count_text"] = extra["count_text"]
+            else:
+                playlists.append(extra)
+    except Exception:
+        pass
+    if not any(p["id"] == "WL" for p in playlists):
+        playlists.insert(0, {"id": "WL", "title": "Xem sau", "privacy": "PRIVATE", "contains_selected": False, "count_text": "", "thumbnail": ""})
     if not any(p["id"] == "LL" for p in playlists):
-        playlists.append({"id": "LL", "title": "Video đã thích", "privacy": "PRIVATE", "contains_selected": False, "count_text": "", "thumbnail": ""})
+        wl_idx = next((i for i, p in enumerate(playlists) if p["id"] == "WL"), -1)
+        ll_obj = {"id": "LL", "title": "Video đã thích", "privacy": "PRIVATE", "contains_selected": False, "count_text": "", "thumbnail": ""}
+        if wl_idx >= 0:
+            playlists.insert(wl_idx + 1, ll_obj)
+        else:
+            playlists.insert(0, ll_obj)
     return {"playlists": playlists}
 
 
@@ -3020,7 +3065,7 @@ async def api_stream(
             chunk_headers["Content-Range"] = f"bytes {req_start}-{req_end}/{total}"
 
         async def chunked_generator():
-            chunk_span = 262144 if total < 35_000_000 else 524288
+            chunk_span = 1048576 if total < 35_000_000 else 4194304
             cursor = req_start
             try:
                 while cursor <= req_end:

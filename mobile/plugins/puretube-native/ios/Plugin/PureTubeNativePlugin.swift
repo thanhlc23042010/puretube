@@ -420,7 +420,7 @@ public class PureTubeNativePlugin: CAPPlugin {
         guard let hdrData = hdr.data(using: .ascii), writeAll(fd, data: hdrData) else { return }
         if method == "HEAD" { return }
 
-        var chunkSpan: Int64 = (total > 0 && total < 35_000_000) ? 262_144 : 524_288
+        var chunkSpan: Int64 = (total > 0 && total < 35_000_000) ? 1_048_576 : 4_194_304
         var cursor = reqStart
         while cursor <= reqEnd {
             let subEnd = min(cursor + chunkSpan - 1, reqEnd)
