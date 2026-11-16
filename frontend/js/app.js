@@ -5,10 +5,18 @@
     searchQuery: "",
     activeSubChannel: null,
     subsSource: "local", // local | youtube
+    playlistsSource: "local", // local | youtube
     historySource: "local", // local | youtube
     queue: [],
     queueIndex: -1,
     queueName: "",
+    shortsItems: [],
+    shortsIndex: 0,
+    shortsMuted: false,
+    shortsVideoData: null,
+    channelPage: { ref: "", name: "", tab: "videos", data: null },
+    videoReaction: "none",
+    commentsNextToken: "",
     serverInfo: null,
     authStatus: { logged_in: false, account_name: "", method: "" },
     currentVideoSummary: null,
@@ -115,19 +123,36 @@
     items.slice(0, 2).forEach((v) => PureAPI.prefetchVideo(v.id));
   }
 
+  function stopShortsPlayback() {
+    const sv = document.getElementById("shorts-video");
+    if (sv) {
+      sv.pause();
+      sv.removeAttribute("src");
+      sv.load();
+    }
+    if (state._shortsAudio) {
+      state._shortsAudio.pause();
+      state._shortsAudio.removeAttribute("src");
+    }
+  }
+
   function switchTab(tabName) {
+    if (state.activeTab === "shorts" && tabName !== "shorts") {
+      stopShortsPlayback();
+    }
     state.activeTab = tabName;
     document.querySelectorAll(".page-view").forEach((view) => {
       view.classList.toggle("active", view.id === `view-${tabName}`);
     });
 
-    const navTab = tabName === "watch" ? "" : tabName;
+    const navTab = tabName === "watch" || tabName === "channel" ? "" : tabName;
     document.querySelectorAll(".nav-item, .bottom-nav-item").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.tab === navTab);
     });
 
     updateMiniPlayerVisibility();
 
+    if (tabName === "shorts") renderShortsView();
     if (tabName === "subscriptions") renderSubscriptionsView();
     if (tabName === "playlists") renderPlaylistsView();
     if (tabName === "history") renderHistoryView();
@@ -197,6 +222,9 @@
     renderSkeletonGrid(grid, 8);
     try {
       const data = await PureAPI.getTrending(category);
+      if (category === "all" && data.personalized) {
+        document.getElementById("home-title").textContent = "Đề xuất cho bạn từ YouTube (Không QC)";
+      }
       renderVideoGrid(grid, data.items || []);
     } catch (err) {
       grid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1;"><h2>Không thể tải video</h2><p>${escapeHtml(err.message)}</p></div>`;
@@ -235,13 +263,28 @@
 
   async function openWatchVideo(summary) {
     if (!summary || !summary.id) return;
+    stopShortsPlayback();
     state.currentVideoSummary = summary;
+    state.videoReaction = "none";
+    state.commentsNextToken = "";
     updateMiniPlayerInfo(summary);
     switchTab("watch");
 
     document.getElementById("watch-title").textContent = summary.title || "Đang tải video...";
     document.getElementById("watch-channel-name").textContent = summary.channel || "...";
-    document.getElementById("watch-channel-avatar").textContent = (summary.channel || "P").trim().charAt(0).toUpperCase();
+    document.getElementById("watch-channel-initial").textContent = (summary.channel || "P").trim().charAt(0).toUpperCase();
+    const avImg = document.getElementById("watch-channel-avatar-img");
+    if (avImg) {
+      avImg.src = "";
+      avImg.classList.add("hidden");
+    }
+    document.getElementById("watch-channel-initial").classList.remove("hidden");
+    document.getElementById("watch-like-btn")?.classList.remove("active");
+    document.getElementById("watch-dislike-btn")?.classList.remove("active");
+    document.getElementById("watch-like-count").textContent = "Thích";
+    document.getElementById("comments-header-title").textContent = "Bình luận";
+    document.getElementById("comments-load-more-btn")?.classList.add("hidden");
+    document.getElementById("comments-list").innerHTML = `<div class="skeleton-box skeleton-line" style="height:54px"></div>`;
     document.getElementById("watch-views").textContent = "Đang nạp luồng phát...";
     document.getElementById("watch-sponsor-summary").textContent = "Đang kiểm tra SponsorBlock...";
     document.getElementById("watch-sync-hint").textContent = state.authStatus?.logged_in
@@ -273,23 +316,26 @@
       Store.addHistory(state.currentVideoSummary);
       updateMiniPlayerInfo(state.currentVideoSummary);
 
+      const shieldSpan = document.querySelector("#watch-adshield-pill span");
+      if (shieldSpan) {
+        shieldSpan.textContent = full.is_live ? "TRỰC TIẾP · Sạch 100%" : "Luồng sạch 100%";
+      }
       document.getElementById("watch-title").textContent = full.title;
       document.getElementById("watch-channel-name").textContent = full.channel;
-      document.getElementById("watch-channel-avatar").textContent = full.channel.trim().charAt(0).toUpperCase();
-      document.getElementById("watch-views").textContent = PureAPI.formatViews(full.view_count);
+      document.getElementById("watch-channel-initial").textContent = full.channel.trim().charAt(0).toUpperCase();
+      document.getElementById("watch-views").textContent = full.is_live ? "Đang phát trực tiếp" : PureAPI.formatViews(full.view_count);
       document.getElementById("watch-description").textContent = full.description || "Video này không có mô tả.";
       updateSubscribeButton(full.channel);
       renderChapters(full.chapters || []);
 
-      // Start playback IMMEDIATELY before waiting for SponsorBlock & related search
+      // Start playback IMMEDIATELY before waiting for SponsorBlock, comments & related search
       PurePlayer.loadVideo(full);
 
-      // Prefetch next queued video right away if inside a playlist
       if (state.queue.length && state.queueIndex + 1 < state.queue.length) {
         PureAPI.prefetchVideo(state.queue[state.queueIndex + 1].id);
       }
 
-      // Fetch SponsorBlock & Related asynchronously
+      // Fetch SponsorBlock, channel/like metadata, comments token & related asynchronously
       PureAPI.getVideoExtras(full.id, full.channel, full.title)
         .then((extras) => {
           if (!state.currentVideoFull || state.currentVideoFull.id !== full.id) return;
@@ -297,6 +343,23 @@
           const related = extras.related || [];
           state.currentVideoFull.sponsor_segments = segs;
           state.currentVideoFull.related = related;
+          if (extras.channel_id && /^UC[A-Za-z0-9_-]{22}$/.test(extras.channel_id)) {
+            state.currentVideoFull.channel_id = extras.channel_id;
+          }
+          if (extras.channel_avatar && avImg) {
+            avImg.src = extras.channel_avatar;
+            avImg.classList.remove("hidden");
+            document.getElementById("watch-channel-initial").classList.add("hidden");
+          }
+          if (extras.subscriber_count_text) {
+            document.getElementById("watch-sync-hint").textContent = extras.subscriber_count_text;
+          }
+          if (extras.like_count_text) {
+            document.getElementById("watch-like-count").textContent = extras.like_count_text;
+          }
+          if (extras.comment_count_text) {
+            document.getElementById("comments-header-title").textContent = `Bình luận (${extras.comment_count_text})`;
+          }
 
           document.getElementById("watch-sponsor-summary").textContent =
             segs.length > 0
@@ -305,6 +368,7 @@
           renderSponsorLegend(segs);
           renderRelatedList(related);
           PurePlayer.setSponsorSegments(segs);
+          loadVideoComments(full.id, extras.comments_token || "", false);
 
           if (related.length > 0) {
             PureAPI.prefetchVideo(related[0].id);
@@ -312,10 +376,95 @@
         })
         .catch(() => {
           document.getElementById("watch-sponsor-summary").textContent = "Luồng phát sạch quảng cáo";
+          loadVideoComments(full.id, "", false);
         });
     } catch (err) {
       PurePlayer.showSpinner(false);
       window.showAppToast(err.message || "Không thể phát video này.");
+    }
+  }
+
+  function renderCommentHtml(c, isReply = false) {
+    const initial = (c.author || "U").trim().charAt(0).toUpperCase();
+    const avatarHtml = c.avatar
+      ? `<img class="comment-avatar" src="${escapeHtml(c.avatar)}" alt="" loading="lazy" />`
+      : `<div class="comment-avatar comment-avatar-fallback">${escapeHtml(initial)}</div>`;
+    return `
+      <div class="comment-item ${isReply ? "comment-reply" : ""}" data-comment-id="${escapeHtml(c.id)}">
+        ${avatarHtml}
+        <div class="comment-body">
+          <div class="comment-meta">
+            <span class="comment-author ${c.is_creator ? "creator" : ""}">${escapeHtml(c.author)}</span>
+            <span class="comment-time">${escapeHtml(c.published)}</span>
+          </div>
+          <div class="comment-text">${escapeHtml(c.text)}</div>
+          <div class="comment-actions">
+            ${c.likes ? `<span class="comment-likes">👍 ${escapeHtml(c.likes)}</span>` : ""}
+            ${c.hearted ? `<span class="comment-heart" title="Chủ kênh đã thả tim">❤</span>` : ""}
+            ${
+              !isReply && c.reply_token
+                ? `<button type="button" class="btn-subtle btn-xs comment-replies-btn" data-reply-token="${escapeHtml(c.reply_token)}">Xem ${escapeHtml(c.reply_count || "")} phản hồi</button>`
+                : ""
+            }
+          </div>
+          <div class="comment-replies-box hidden"></div>
+        </div>
+      </div>`;
+  }
+
+  async function loadVideoComments(videoId, continuation = "", append = false) {
+    const list = document.getElementById("comments-list");
+    const moreBtn = document.getElementById("comments-load-more-btn");
+    if (!list) return;
+    if (!append) {
+      list.innerHTML = `<div class="skeleton-box skeleton-line" style="height:54px"></div>`;
+    }
+    try {
+      const data = await PureAPI.getComments(videoId, continuation);
+      if (!state.currentVideoFull || state.currentVideoFull.id !== videoId) return;
+      const items = data.comments || [];
+      state.commentsNextToken = data.next_continuation || "";
+      if (!append) list.innerHTML = "";
+      if (!items.length && !append) {
+        list.innerHTML = `<p class="settings-desc">Video này chưa có bình luận hoặc đã tắt bình luận.</p>`;
+        moreBtn?.classList.add("hidden");
+        return;
+      }
+      const wrapper = document.createElement("div");
+      wrapper.innerHTML = items.map((c) => renderCommentHtml(c, false)).join("");
+      wrapper.querySelectorAll(".comment-replies-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const itemEl = btn.closest(".comment-item");
+          const repBox = itemEl?.querySelector(".comment-replies-box");
+          if (!repBox) return;
+          if (!repBox.classList.contains("hidden") && repBox.childElementCount > 0) {
+            repBox.classList.add("hidden");
+            return;
+          }
+          btn.disabled = true;
+          const orig = btn.textContent;
+          btn.textContent = "Đang tải...";
+          try {
+            const repData = await PureAPI.getComments(videoId, btn.dataset.replyToken);
+            const reps = repData.comments || [];
+            repBox.innerHTML = reps.length
+              ? reps.map((r) => renderCommentHtml(r, true)).join("")
+              : `<span class="settings-desc">Không có phản hồi.</span>`;
+            repBox.classList.remove("hidden");
+          } catch (_) {
+            window.showAppToast("Không tải được phản hồi.");
+          } finally {
+            btn.disabled = false;
+            btn.textContent = orig;
+          }
+        });
+      });
+      while (wrapper.firstChild) list.appendChild(wrapper.firstChild);
+      if (moreBtn) {
+        moreBtn.classList.toggle("hidden", !state.commentsNextToken);
+      }
+    } catch (_) {
+      if (!append) list.innerHTML = `<p class="settings-desc">Không thể tải bình luận lúc này.</p>`;
     }
   }
 
@@ -535,8 +684,240 @@
     }
   }
 
-  function renderPlaylistsView() {
+  async function renderShortsView() {
+    PurePlayer.pause();
+    const sv = document.getElementById("shorts-video");
+    if (!sv) return;
+    if (!state.shortsItems.length) {
+      document.getElementById("shorts-title").textContent = "Đang tải YouTube Shorts...";
+      document.getElementById("shorts-spinner")?.classList.remove("hidden");
+      try {
+        const res = await PureAPI.getShorts("");
+        state.shortsItems = res.items || [];
+        state.shortsIndex = 0;
+      } catch (_) {}
+    }
+    if (!state.shortsItems.length) {
+      document.getElementById("shorts-spinner")?.classList.add("hidden");
+      document.getElementById("shorts-title").textContent = "Không tải được danh sách Shorts lúc này.";
+      return;
+    }
+    await playShortAtIndex(state.shortsIndex);
+  }
+
+  async function playShortAtIndex(idx) {
+    if (!state.shortsItems.length) return;
+    const bounded = ((idx % state.shortsItems.length) + state.shortsItems.length) % state.shortsItems.length;
+    state.shortsIndex = bounded;
+    const item = state.shortsItems[bounded];
+    const sv = document.getElementById("shorts-video");
+    const spinner = document.getElementById("shorts-spinner");
+    const titleEl = document.getElementById("shorts-title");
+    const chEl = document.getElementById("shorts-channel-btn");
+    if (!sv) return;
+
+    stopShortsPlayback();
+    spinner?.classList.remove("hidden");
+    titleEl.textContent = item.title || "YouTube Short";
+    chEl.textContent = item.channel || "YouTube Shorts";
+    document.getElementById("shorts-like-label").textContent = "Thích";
+    document.getElementById("shorts-like-btn")?.classList.remove("active");
+
+    try {
+      const full = await PureAPI.getVideo(item.id);
+      if (state.activeTab !== "shorts" || state.shortsItems[state.shortsIndex]?.id !== item.id) return;
+      state.shortsVideoData = full;
+      titleEl.textContent = full.title || item.title;
+      chEl.textContent = full.channel || item.channel || "YouTube Shorts";
+
+      const qs = full.qualities || [];
+      const comb = qs.find((q) => q.has_audio) || qs.find((q) => q.height <= 720) || qs[0];
+      if (!comb?.stream_url) {
+        spinner?.classList.add("hidden");
+        return;
+      }
+
+      sv.src = PureAPI.resolveUrl(comb.stream_url);
+      sv.muted = !comb.has_audio || state.shortsMuted;
+      if (!comb.has_audio && full.audio_stream_url) {
+        if (!state._shortsAudio) state._shortsAudio = new Audio();
+        state._shortsAudio.src = PureAPI.resolveUrl(full.audio_stream_url);
+        state._shortsAudio.muted = state.shortsMuted;
+        state._shortsAudio.loop = true;
+        state._shortsAudio.load();
+      }
+      sv.oncanplay = () => spinner?.classList.add("hidden");
+      sv.onerror = () => spinner?.classList.add("hidden");
+      sv.onplay = () => {
+        if (!comb.has_audio && state._shortsAudio?.src) {
+          state._shortsAudio.currentTime = sv.currentTime;
+          state._shortsAudio.play().catch(() => {});
+        }
+      };
+      sv.onpause = () => state._shortsAudio?.pause();
+      sv.load();
+      sv.play().catch(() => {});
+    } catch (_) {
+      spinner?.classList.add("hidden");
+    }
+  }
+
+  async function openChannelPage(channelRef, nameHint = "", tab = "videos") {
+    if (!channelRef) return;
+    state.channelPage = { ref: channelRef, name: nameHint || channelRef, tab, data: null };
+    switchTab("channel");
+    const hero = document.getElementById("channel-hero");
+    const grid = document.getElementById("channel-grid");
+    document.querySelectorAll("#channel-tabs-strip .chip").forEach((c) => {
+      c.classList.toggle("active", c.dataset.chTab === tab);
+    });
+    hero.innerHTML = `<div class="skeleton-box skeleton-line" style="height:100px"></div>`;
+    renderSkeletonGrid(grid, 8);
+
+    try {
+      const data = await PureAPI.getChannel(channelRef, tab);
+      state.channelPage.data = data;
+      state.channelPage.ref = data.channel_id || channelRef;
+      state.channelPage.name = data.name || nameHint || channelRef;
+
+      const isSub = Store.isSubscribed(state.channelPage.name);
+      const initial = (state.channelPage.name || "C").trim().charAt(0).toUpperCase();
+      hero.innerHTML = `
+        ${data.banner ? `<img class="channel-banner-img" src="${escapeHtml(data.banner)}" alt="" />` : ""}
+        <div class="channel-hero-body">
+          ${
+            data.avatar
+              ? `<img class="channel-hero-avatar" src="${escapeHtml(data.avatar)}" alt="" />`
+              : `<div class="channel-hero-avatar channel-hero-initial">${escapeHtml(initial)}</div>`
+          }
+          <div class="channel-hero-info">
+            <h1 class="section-title" style="margin:0;">${escapeHtml(state.channelPage.name)}</h1>
+            <div class="settings-desc">${escapeHtml(data.subscribers || "Kênh YouTube sạch quảng cáo")}</div>
+          </div>
+          <button type="button" class="btn-subscribe ${isSub ? "subscribed" : ""}" id="channel-page-sub-btn">${
+            isSub ? "Đã đăng ký" : "Đăng ký"
+          }</button>
+        </div>
+      `;
+
+      document.getElementById("channel-page-sub-btn")?.addEventListener("click", async (e) => {
+        const subBtn = e.currentTarget;
+        const added = Store.toggleSubscription({ id: state.channelPage.ref, name: state.channelPage.name });
+        subBtn.classList.toggle("subscribed", added);
+        subBtn.textContent = added ? "Đã đăng ký" : "Đăng ký";
+        if (state.authStatus?.logged_in && /^UC[A-Za-z0-9_-]{22}$/.test(state.channelPage.ref)) {
+          try {
+            await PureAPI.subscribeChannel(state.channelPage.ref, added);
+          } catch (_) {}
+        }
+        window.showAppToast(added ? `Đã đăng ký kênh ${state.channelPage.name}` : "Đã hủy đăng ký kênh");
+      });
+
+      const items = data.items || [];
+      if (tab === "playlists") {
+        if (!items.length) {
+          grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><p>Kênh này chưa có danh sách phát công khai.</p></div>`;
+          return;
+        }
+        grid.innerHTML = items
+          .map(
+            (pl) => `
+          <button type="button" class="video-card yt-pl-open-card" data-yt-pl="${escapeHtml(pl.id)}" data-yt-title="${escapeHtml(pl.title)}">
+            <div class="thumb-wrap">
+              ${
+                pl.thumbnail
+                  ? `<img class="thumb-img" src="${escapeHtml(pl.thumbnail)}" alt="" loading="lazy" />`
+                  : `<div class="thumb-img" style="display:flex;align-items:center;justify-content:center;color:var(--text-secondary);">Playlist</div>`
+              }
+              ${pl.count_text ? `<span class="duration-badge">${escapeHtml(pl.count_text)}</span>` : ""}
+            </div>
+            <div class="card-meta">
+              <div class="card-info">
+                <h3 class="card-title">${escapeHtml(pl.title)}</h3>
+                <div class="card-sub">Danh sách phát YouTube</div>
+              </div>
+            </div>
+          </button>`
+          )
+          .join("");
+        grid.querySelectorAll(".yt-pl-open-card").forEach((card) => {
+          card.addEventListener("click", () => playYoutubePlaylist(card.dataset.ytPl, card.dataset.ytTitle));
+        });
+      } else {
+        renderVideoGrid(grid, items);
+      }
+    } catch (err) {
+      hero.innerHTML = "";
+      grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1;"><h2>Không tải được kênh</h2><p>${escapeHtml(err.message)}</p></div>`;
+    }
+  }
+
+  async function playYoutubePlaylist(playlistId, title = "Playlist YouTube") {
+    window.showAppToast(`Đang nạp "${title}"...`);
+    try {
+      const data = await PureAPI.getYoutubePlaylistItems(playlistId);
+      const items = data.items || [];
+      if (!items.length) {
+        window.showAppToast("Danh sách phát này hiện đang trống.");
+        return;
+      }
+      state.queue = items;
+      state.queueIndex = 0;
+      state.queueName = title;
+      openWatchVideo(items[0]);
+    } catch (err) {
+      window.showAppToast(err.message || "Không tải được danh sách phát.");
+    }
+  }
+
+  async function renderPlaylistsView() {
     const container = document.getElementById("playlists-content");
+    document.querySelectorAll("#playlists-source-tabs .source-tab").forEach((b) => {
+      b.classList.toggle("active", b.dataset.plSource === state.playlistsSource);
+    });
+
+    if (state.playlistsSource === "youtube") {
+      if (!state.authStatus?.logged_in) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <h2>Chưa đăng nhập Tài khoản Google</h2>
+            <p>Đăng nhập Google để xem và phát tất cả danh sách phát YouTube (Xem sau, Video đã thích, Playlist cá nhân) đồng bộ từ tài khoản của bạn.</p>
+            <button type="button" class="btn-primary" id="pl-open-auth-btn">Đăng nhập Google ngay</button>
+          </div>`;
+        document.getElementById("pl-open-auth-btn")?.addEventListener("click", openAuthDialog);
+        return;
+      }
+      container.innerHTML = `<div class="skeleton-box skeleton-line" style="height:80px"></div>`;
+      try {
+        const res = await PureAPI.getYoutubePlaylists();
+        const pls = res.playlists || [];
+        if (!pls.length) {
+          container.innerHTML = `<div class="empty-state"><p>Không tìm thấy danh sách phát nào trên tài khoản YouTube.</p></div>`;
+          return;
+        }
+        container.innerHTML = `<div class="playlist-grid">${pls
+          .map(
+            (pl) => `
+          <article class="playlist-card">
+            <div class="playlist-card-head">
+              <div>
+                <h2 class="playlist-card-title">${escapeHtml(pl.title)}</h2>
+                <div class="playlist-card-count">${escapeHtml(pl.privacy || "YouTube Playlist")}</div>
+              </div>
+              <button type="button" class="btn-primary btn-sm yt-pl-play-btn" data-yt-pl="${escapeHtml(pl.id)}" data-yt-title="${escapeHtml(pl.title)}">Phát tất cả</button>
+            </div>
+          </article>`
+          )
+          .join("")}</div>`;
+        container.querySelectorAll(".yt-pl-play-btn").forEach((btn) => {
+          btn.addEventListener("click", () => playYoutubePlaylist(btn.dataset.ytPl, btn.dataset.ytTitle));
+        });
+      } catch (err) {
+        container.innerHTML = `<div class="empty-state"><p>${escapeHtml(err.message)}</p></div>`;
+      }
+      return;
+    }
+
     const playlists = Store.state.playlists;
 
     if (!playlists.length) {
@@ -956,6 +1337,9 @@
     const completeSuccess = async (noticeMsg) => {
       stopPolling();
       await refreshAuthStatus();
+      if (state.activeTab === "home" && !state.searchQuery) {
+        loadTrending(state.category);
+      }
       window.showAppToast(noticeMsg);
       renderBody({ type: "success", text: noticeMsg });
     };
@@ -1266,8 +1650,33 @@
     const body = document.getElementById("playlist-dialog-body");
     const video = state.currentVideoSummary;
 
-    const renderBody = () => {
+    const renderBody = (ytPlaylists = null, ytLoading = false) => {
       body.innerHTML = `
+        ${
+          state.authStatus?.logged_in
+            ? `
+          <div style="margin-bottom:8px;">
+            <div class="settings-desc" style="font-weight:600;color:var(--text-primary);margin-bottom:6px;">Trên tài khoản YouTube (Đồng bộ Google)</div>
+            <div style="display:flex;flex-direction:column;gap:6px;" id="dialog-yt-pl-box">
+              ${
+                ytLoading
+                  ? `<div class="settings-desc">Đang tải playlist YouTube...</div>`
+                  : (ytPlaylists || [])
+                      .filter((p) => p.id !== "LL")
+                      .map(
+                        (pl) => `
+                  <label class="playlist-option-row" style="cursor:pointer;">
+                    <span>${escapeHtml(pl.title)}</span>
+                    <input type="checkbox" class="yt-pl-dialog-cb" data-yt-pl-id="${escapeHtml(pl.id)}" ${pl.contains_selected ? "checked" : ""} style="width:18px;height:18px;accent-color:var(--accent);" />
+                  </label>`
+                      )
+                      .join("") || `<div class="settings-desc">Không có danh sách khả dụng.</div>`
+              }
+            </div>
+          </div>`
+            : ""
+        }
+        <div class="settings-desc" style="font-weight:600;color:var(--text-primary);margin-bottom:4px;">Trên thiết bị này</div>
         <div style="display:flex;flex-direction:column;gap:8px;">
           ${Store.state.playlists
             .map((pl) => {
@@ -1286,6 +1695,22 @@
         </form>
       `;
 
+      body.querySelectorAll(".yt-pl-dialog-cb").forEach((cb) => {
+        cb.addEventListener("change", async () => {
+          const add = cb.checked;
+          cb.disabled = true;
+          try {
+            await PureAPI.addVideoToYoutubePlaylist(cb.dataset.ytPlId, video.id, !add);
+            window.showAppToast(add ? "Đã lưu lên playlist YouTube của bạn." : "Đã gỡ khỏi playlist YouTube.");
+          } catch (err) {
+            cb.checked = !add;
+            window.showAppToast(err.message);
+          } finally {
+            cb.disabled = false;
+          }
+        });
+      });
+
       body.querySelectorAll(".pl-dialog-cb").forEach((cb) => {
         cb.addEventListener("change", () => {
           const added = Store.toggleVideoInPlaylist(cb.dataset.plId, video);
@@ -1300,13 +1725,18 @@
         if (created) {
           Store.toggleVideoInPlaylist(created.id, video);
           window.showAppToast(`Đã tạo và lưu vào "${created.name}".`);
-          renderBody();
+          renderBody(ytPlaylists, false);
         }
       });
     };
 
-    renderBody();
+    renderBody(null, Boolean(state.authStatus?.logged_in));
     dialog.showModal();
+    if (state.authStatus?.logged_in) {
+      PureAPI.getYoutubePlaylists(video.id)
+        .then((res) => renderBody(res.playlists || [], false))
+        .catch(() => renderBody([], false));
+    }
   }
 
   function bindGlobalEvents() {
@@ -1330,6 +1760,80 @@
       if (!tab) return;
       state.subsSource = tab.dataset.subsSource;
       renderSubscriptionsView();
+    });
+
+    document.getElementById("playlists-source-tabs")?.addEventListener("click", (e) => {
+      const tab = e.target.closest("[data-pl-source]");
+      if (!tab) return;
+      state.playlistsSource = tab.dataset.plSource;
+      renderPlaylistsView();
+    });
+
+    document.getElementById("channel-tabs-strip")?.addEventListener("click", (e) => {
+      const btn = e.target.closest("[data-ch-tab]");
+      if (!btn || !state.channelPage.ref) return;
+      openChannelPage(state.channelPage.ref, state.channelPage.name, btn.dataset.chTab);
+    });
+
+    // Shorts interactions & swipe navigation
+    const shortsVideo = document.getElementById("shorts-video");
+    if (shortsVideo) {
+      let touchStartY = 0;
+      const stageEl = document.getElementById("shorts-stage");
+      shortsVideo.addEventListener("click", () => {
+        if (shortsVideo.paused) shortsVideo.play().catch(() => {});
+        else shortsVideo.pause();
+      });
+      stageEl?.addEventListener("touchstart", (e) => {
+        touchStartY = e.touches?.[0]?.clientY || 0;
+      }, { passive: true });
+      stageEl?.addEventListener("touchend", (e) => {
+        const dy = (e.changedTouches?.[0]?.clientY || 0) - touchStartY;
+        if (Math.abs(dy) > 55) {
+          playShortAtIndex(state.shortsIndex + (dy < 0 ? 1 : -1));
+        }
+      }, { passive: true });
+    }
+    document.getElementById("shorts-prev-btn")?.addEventListener("click", () => playShortAtIndex(state.shortsIndex - 1));
+    document.getElementById("shorts-next-btn")?.addEventListener("click", () => playShortAtIndex(state.shortsIndex + 1));
+    document.getElementById("shorts-mute-btn")?.addEventListener("click", () => {
+      state.shortsMuted = !state.shortsMuted;
+      const sv = document.getElementById("shorts-video");
+      if (sv) sv.muted = state.shortsMuted;
+      if (state._shortsAudio) state._shortsAudio.muted = state.shortsMuted;
+      document.getElementById("shorts-mute-btn").textContent = state.shortsMuted ? "Đã tắt tiếng" : "Âm thanh";
+    });
+    document.getElementById("shorts-open-full-btn")?.addEventListener("click", () => {
+      const cur = state.shortsItems[state.shortsIndex];
+      if (cur) openWatchVideo(cur);
+    });
+    document.getElementById("shorts-comments-btn")?.addEventListener("click", () => {
+      const cur = state.shortsItems[state.shortsIndex];
+      if (cur) {
+        openWatchVideo(cur).then(() => {
+          document.getElementById("watch-comments-card")?.scrollIntoView({ behavior: "smooth" });
+        });
+      }
+    });
+    document.getElementById("shorts-channel-btn")?.addEventListener("click", () => {
+      const d = state.shortsVideoData || state.shortsItems[state.shortsIndex];
+      if (d) openChannelPage(d.channel_id || d.channel, d.channel);
+    });
+    document.getElementById("shorts-like-btn")?.addEventListener("click", async () => {
+      const cur = state.shortsItems[state.shortsIndex];
+      if (!cur) return;
+      if (!state.authStatus?.logged_in) {
+        window.showAppToast("Hãy đăng nhập Google để Thích video lên YouTube.");
+        return;
+      }
+      try {
+        await PureAPI.reactVideo(cur.id, "like");
+        document.getElementById("shorts-like-btn")?.classList.add("active");
+        document.getElementById("shorts-like-label").textContent = "Đã thích";
+        window.showAppToast("Đã thích Short lên tài khoản YouTube.");
+      } catch (err) {
+        window.showAppToast(err.message);
+      }
     });
 
     // Category chips
@@ -1414,14 +1918,49 @@
       switchTab("home");
     });
 
-    document.getElementById("watch-subscribe-btn").addEventListener("click", () => {
+    document.getElementById("watch-channel-open-btn")?.addEventListener("click", () => {
       if (!state.currentVideoFull) return;
-      const added = Store.toggleSubscription({
-        id: state.currentVideoFull.channel_id,
-        name: state.currentVideoFull.channel,
-      });
-      updateSubscribeButton(state.currentVideoFull.channel);
-      window.showAppToast(added ? `Đã đăng ký kênh ${state.currentVideoFull.channel}` : "Đã hủy đăng ký kênh");
+      openChannelPage(state.currentVideoFull.channel_id || state.currentVideoFull.channel, state.currentVideoFull.channel);
+    });
+
+    const handleReaction = async (targetAction) => {
+      if (!state.currentVideoFull) return;
+      if (!state.authStatus?.logged_in) {
+        window.showAppToast("Hãy đăng nhập Google để Thích / Không thích đồng bộ YouTube.");
+        openAuthDialog();
+        return;
+      }
+      const next = state.videoReaction === targetAction ? "none" : targetAction;
+      state.videoReaction = next;
+      document.getElementById("watch-like-btn")?.classList.toggle("active", next === "like");
+      document.getElementById("watch-dislike-btn")?.classList.toggle("active", next === "dislike");
+      try {
+        await PureAPI.reactVideo(state.currentVideoFull.id, next);
+        window.showAppToast(next === "like" ? "Đã thích video lên YouTube." : next === "dislike" ? "Đã đánh dấu Không thích." : "Đã bỏ tương tác.");
+      } catch (err) {
+        window.showAppToast(err.message);
+      }
+    };
+    document.getElementById("watch-like-btn")?.addEventListener("click", () => handleReaction("like"));
+    document.getElementById("watch-dislike-btn")?.addEventListener("click", () => handleReaction("dislike"));
+    document.getElementById("comments-load-more-btn")?.addEventListener("click", () => {
+      if (state.currentVideoFull && state.commentsNextToken) {
+        loadVideoComments(state.currentVideoFull.id, state.commentsNextToken, true);
+      }
+    });
+
+    document.getElementById("watch-subscribe-btn").addEventListener("click", async () => {
+      if (!state.currentVideoFull) return;
+      const cid = state.currentVideoFull.channel_id;
+      const cname = state.currentVideoFull.channel;
+      const added = Store.toggleSubscription({ id: cid, name: cname });
+      updateSubscribeButton(cname);
+      if (state.authStatus?.logged_in && /^UC[A-Za-z0-9_-]{22}$/.test(cid || "")) {
+        try {
+          await PureAPI.subscribeChannel(cid, added);
+        } catch (_) {}
+      }
+      window.showAppToast(added ? `Đã đăng ký kênh ${cname}` : "Đã hủy đăng ký kênh");
     });
 
     document.getElementById("watch-save-playlist-btn").addEventListener("click", openPlaylistDialog);
@@ -1431,13 +1970,31 @@
       document.getElementById("download-menu").classList.toggle("hidden");
     });
 
+    PureAPI.addNativeListener("downloadProgress", (ev) => {
+      if (ev?.percent !== undefined && ev.percent % 25 === 0) {
+        window.showAppToast(`Đang tải offline: ${ev.percent}%...`);
+      }
+    });
+
     document.getElementById("download-menu").querySelectorAll("button").forEach((btn) => {
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", async () => {
         if (!state.currentVideoFull) return;
         const mode = btn.dataset.dlMode;
         const height = parseInt(btn.dataset.dlHeight, 10) || 720;
-        const url = PureAPI.getDownloadUrl(state.currentVideoFull.id, mode, height);
         document.getElementById("download-menu").classList.add("hidden");
+
+        if (PureAPI.isNativeStandalone()) {
+          window.showAppToast("Đang tải tệp offline về bộ nhớ điện thoại...");
+          try {
+            const res = await PureAPI.downloadToDevice(state.currentVideoFull, mode);
+            window.showAppToast(`Đã lưu thành công: ${res.savedPath || res.filename}`);
+          } catch (err) {
+            window.showAppToast(err.message || "Không thể tải video trực tiếp này.");
+          }
+          return;
+        }
+
+        const url = PureAPI.getDownloadUrl(state.currentVideoFull.id, mode, height);
         window.showAppToast("Đang xử lý tệp tải về (có thể mất vài giây)...");
         const a = document.createElement("a");
         a.href = url;

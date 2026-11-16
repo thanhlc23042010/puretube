@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Capacitor
 import Darwin
+import MediaPlayer
 
 private final class StreamSpec {
     let url: String
@@ -26,6 +27,7 @@ public class PureTubeNativePlugin: CAPPlugin {
     private let proxyLock = NSLock()
     private var listenFd: Int32 = -1
     private var proxyPort: Int = 0
+    private var remoteConfigured = false
     private let proxySession: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.timeoutIntervalForRequest = 15.0
@@ -43,6 +45,7 @@ public class PureTubeNativePlugin: CAPPlugin {
             // Non-fatal if simulator or audio session deferred
         }
         _ = ensureProxyStarted()
+        configureRemoteCommands()
     }
 
     deinit {
@@ -53,6 +56,32 @@ public class PureTubeNativePlugin: CAPPlugin {
         }
         proxyPort = 0
         proxyLock.unlock()
+    }
+
+    private func configureRemoteCommands() {
+        if remoteConfigured { return }
+        remoteConfigured = true
+        let cc = MPRemoteCommandCenter.shared()
+        cc.playCommand.isEnabled = true
+        cc.playCommand.addTarget { [weak self] _ in
+            self?.notifyListeners("mediaControlAction", data: ["action": "play"])
+            return .success
+        }
+        cc.pauseCommand.isEnabled = true
+        cc.pauseCommand.addTarget { [weak self] _ in
+            self?.notifyListeners("mediaControlAction", data: ["action": "pause"])
+            return .success
+        }
+        cc.nextTrackCommand.isEnabled = true
+        cc.nextTrackCommand.addTarget { [weak self] _ in
+            self?.notifyListeners("mediaControlAction", data: ["action": "next"])
+            return .success
+        }
+        cc.previousTrackCommand.isEnabled = true
+        cc.previousTrackCommand.addTarget { [weak self] _ in
+            self?.notifyListeners("mediaControlAction", data: ["action": "prev"])
+            return .success
+        }
     }
 
     private func ensureProxyStarted() -> Int {
@@ -145,20 +174,22 @@ public class PureTubeNativePlugin: CAPPlugin {
         }
     }
 
-    private func fetchUpstreamSync(urlStr: String, headers: [String: String], rangeHeader: String) -> (Int, [AnyHashable: Any], Data)? {
+    private func fetchUpstreamSync(urlStr: String, headers: [String: String], rangeHeader: String?) -> (Int, URL?, [AnyHashable: Any], Data)? {
         guard let url = URL(string: urlStr) else { return nil }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20.0)
         req.httpMethod = "GET"
         for (k, v) in headers where k.lowercased() != "accept-encoding" && k.lowercased() != "range" {
             req.setValue(v, forHTTPHeaderField: k)
         }
-        req.setValue(rangeHeader, forHTTPHeaderField: "Range")
+        if let r = rangeHeader, !r.isEmpty {
+            req.setValue(r, forHTTPHeaderField: "Range")
+        }
 
         let sem = DispatchSemaphore(value: 0)
-        var out: (Int, [AnyHashable: Any], Data)?
+        var out: (Int, URL?, [AnyHashable: Any], Data)?
         proxySession.dataTask(with: req) { data, response, _ in
             if let http = response as? HTTPURLResponse {
-                out = (http.statusCode, http.allHeaderFields, data ?? Data())
+                out = (http.statusCode, http.url, http.allHeaderFields, data ?? Data())
             }
             sem.signal()
         }.resume()
@@ -176,7 +207,7 @@ public class PureTubeNativePlugin: CAPPlugin {
     }
 
     private func probeStreamMeta(_ spec: StreamSpec) {
-        guard let (status, hdrs, _) = fetchUpstreamSync(urlStr: spec.url, headers: spec.headers, rangeHeader: "bytes=0-65535") else {
+        guard let (status, _, hdrs, _) = fetchUpstreamSync(urlStr: spec.url, headers: spec.headers, rangeHeader: "bytes=0-65535") else {
             return
         }
         if let cr = parseHeaderCI(hdrs, key: "Content-Range"),
@@ -199,12 +230,100 @@ public class PureTubeNativePlugin: CAPPlugin {
         }
     }
 
+    private func rewriteM3u8Playlist(_ body: String, baseUrl: String, streamId: String) -> String {
+        let proxyPrefix = "http://127.0.0.1:\(proxyPort)/hls-seg?id=\(streamId)&u="
+        let baseURLObj = URL(string: baseUrl)
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=?#")
+
+        let encodeUrl = { (rawRef: String) -> String in
+            let absStr: String
+            if let b = baseURLObj, let resolved = URL(string: rawRef, relativeTo: b)?.absoluteString {
+                absStr = resolved
+            } else {
+                absStr = rawRef
+            }
+            let enc = absStr.addingPercentEncoding(withAllowedCharacters: allowed) ?? absStr
+            return proxyPrefix + enc
+        }
+
+        let regex = try? NSRegularExpression(pattern: "URI=\"([^\"]+)\"")
+        var outLines: [String] = []
+        for rawLine in body.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+            if line.hasPrefix("#") {
+                if let rx = regex {
+                    let ns = line as NSString
+                    let matches = rx.matches(in: line, range: NSRange(location: 0, length: ns.length))
+                    if !matches.isEmpty {
+                        var rewritten = line
+                        for m in matches.reversed() {
+                            if let fullRange = Range(m.range, in: rewritten),
+                               let uriRange = Range(m.range(at: 1), in: rewritten) {
+                                let ref = String(rewritten[uriRange])
+                                rewritten.replaceSubrange(fullRange, with: "URI=\"\(encodeUrl(ref))\"")
+                            }
+                        }
+                        outLines.append(rewritten)
+                        continue
+                    }
+                }
+                outLines.append(line)
+            } else if !line.trimmingCharacters(in: .whitespaces).isEmpty {
+                outLines.append(encodeUrl(line.trimmingCharacters(in: .whitespaces)))
+            } else {
+                outLines.append(line)
+            }
+        }
+        return outLines.joined(separator: "\n")
+    }
+
+    private func handleHlsRequest(fd: Int32, comps: URLComponents, spec: StreamSpec, streamId: String, isSeg: Bool) {
+        var upstreamUrl = spec.url
+        if isSeg {
+            guard let u = comps.queryItems?.first(where: { $0.name == "u" })?.value, !u.isEmpty else {
+                writeSimpleResponse(fd, code: 400, reason: "Bad Request")
+                return
+            }
+            upstreamUrl = u
+        }
+
+        guard let (status, finalUrl, hdrs, data) = fetchUpstreamSync(urlStr: upstreamUrl, headers: spec.headers, rangeHeader: nil) else {
+            writeSimpleResponse(fd, code: 502, reason: "Bad Gateway")
+            return
+        }
+        if status >= 400 {
+            writeSimpleResponse(fd, code: status, reason: "Upstream Error")
+            return
+        }
+
+        let finalStr = finalUrl?.absoluteString ?? upstreamUrl
+        let ct = parseHeaderCI(hdrs, key: "Content-Type") ?? "video/mp2t"
+        let prefix = data.count >= 7 ? String(data: data.prefix(7), encoding: .ascii) : nil
+        let isManifest = !isSeg || finalStr.contains(".m3u8") || ct.lowercased().contains("mpegurl") || prefix == "#EXTM3U"
+
+        if isManifest, let text = String(data: data, encoding: .utf8) {
+            let rewritten = rewriteM3u8Playlist(text, baseUrl: finalStr, streamId: streamId)
+            let outData = rewritten.data(using: .utf8) ?? Data()
+            let hdr = "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Length: \(outData.count)\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+            if let hdrData = hdr.data(using: .ascii), writeAll(fd, data: hdrData) {
+                _ = writeAll(fd, data: outData)
+            }
+            return
+        }
+
+        let hdr = "HTTP/1.1 200 OK\r\nContent-Type: \(ct)\r\nContent-Length: \(data.count)\r\nCache-Control: no-store\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n"
+        if let hdrData = hdr.data(using: .ascii), writeAll(fd, data: hdrData) {
+            _ = writeAll(fd, data: data)
+        }
+    }
+
     private func handleProxyClient(_ fd: Int32) {
         defer { Darwin.close(fd) }
 
         var reqData = Data()
         var chunk = [UInt8](repeating: 0, count: 4096)
-        let separator = Data([13, 10, 13, 10]) // \r\n\r\n
+        let separator = Data([13, 10, 13, 10])
         while reqData.count < 16384 {
             let n = Darwin.recv(fd, &chunk, chunk.count, 0)
             if n <= 0 { break }
@@ -221,6 +340,10 @@ public class PureTubeNativePlugin: CAPPlugin {
         }
         let method = String(parts[0]).uppercased()
         let target = String(parts[1])
+        if method == "OPTIONS" {
+            writeSimpleResponse(fd, code: 204, reason: "No Content", extraHeaders: "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\n")
+            return
+        }
         if method != "GET" && method != "HEAD" {
             writeSimpleResponse(fd, code: 405, reason: "Method Not Allowed")
             return
@@ -247,6 +370,15 @@ public class PureTubeNativePlugin: CAPPlugin {
         registryLock.unlock()
         guard let spec = spec else {
             writeSimpleResponse(fd, code: 404, reason: "Not Found")
+            return
+        }
+
+        if target.hasPrefix("/hls-seg") {
+            handleHlsRequest(fd: fd, comps: comps, spec: spec, streamId: streamId, isSeg: true)
+            return
+        }
+        if target.hasPrefix("/hls") {
+            handleHlsRequest(fd: fd, comps: comps, spec: spec, streamId: streamId, isSeg: false)
             return
         }
 
@@ -292,7 +424,7 @@ public class PureTubeNativePlugin: CAPPlugin {
         var cursor = reqStart
         while cursor <= reqEnd {
             let subEnd = min(cursor + chunkSpan - 1, reqEnd)
-            guard let (status, _, data) = fetchUpstreamSync(urlStr: spec.url, headers: spec.headers, rangeHeader: "bytes=\(cursor)-\(subEnd)") else {
+            guard let (status, _, _, data) = fetchUpstreamSync(urlStr: spec.url, headers: spec.headers, rangeHeader: "bytes=\(cursor)-\(subEnd)") else {
                 break
             }
             if status == 403 && chunkSpan > 65_536 {
@@ -309,16 +441,16 @@ public class PureTubeNativePlugin: CAPPlugin {
         }
     }
 
-    @objc func registerStream(_ call: CAPPluginCall) {
+    private func registerStreamInternal(_ call: CAPPluginCall, pathPrefix: String) -> [String: Any]? {
         let url = call.getString("url") ?? ""
         if url.isEmpty {
             call.reject("Missing url")
-            return
+            return nil
         }
         let port = ensureProxyStarted()
         if port <= 0 {
             call.reject("Failed to start local media proxy")
-            return
+            return nil
         }
         let rawHeaders = call.getObject("headers") ?? [:]
         var headers: [String: String] = [:]
@@ -339,7 +471,115 @@ public class PureTubeNativePlugin: CAPPlugin {
         streamRegistry[String(id)] = StreamSpec(url: url, headers: headers, totalLength: contentLength, mimeType: mimeType)
         registryLock.unlock()
 
-        call.resolve(["proxyUrl": "http://127.0.0.1:\(port)/stream?id=\(id)"])
+        return ["proxyUrl": "http://127.0.0.1:\(port)\(pathPrefix)?id=\(id)"]
+    }
+
+    @objc func registerStream(_ call: CAPPluginCall) {
+        if let out = registerStreamInternal(call, pathPrefix: "/stream") {
+            call.resolve(out)
+        }
+    }
+
+    @objc func registerHls(_ call: CAPPluginCall) {
+        if let out = registerStreamInternal(call, pathPrefix: "/hls") {
+            call.resolve(out)
+        }
+    }
+
+    @objc func downloadToDevice(_ call: CAPPluginCall) {
+        let url = call.getString("url") ?? ""
+        if url.isEmpty {
+            call.reject("Missing url")
+            return
+        }
+        let rawName = call.getString("filename") ?? "puretube_media.mp4"
+        let safeName = rawName.replacingOccurrences(of: "[\\\\/:*?\"<>|]+", with: "_", options: .regularExpression)
+        let finalName = safeName.isEmpty ? "puretube_media.mp4" : safeName
+        let rawHeaders = call.getObject("headers") ?? [:]
+        var headers: [String: String] = [:]
+        for (k, v) in rawHeaders {
+            if let sv = v as? String, k.lowercased() != "accept-encoding" {
+                headers[k] = sv
+            }
+        }
+        let initLen = Int64(call.getDouble("contentLength") ?? 0)
+        let mimeType = call.getString("mimeType") ?? "video/mp4"
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let spec = StreamSpec(url: url, headers: headers, totalLength: initLen, mimeType: mimeType)
+            if spec.totalLength <= 0 {
+                self.probeStreamMeta(spec)
+            }
+            let total = spec.totalLength
+            guard total > 0 else {
+                call.reject("Không xác định được kích thước tệp để tải về.")
+                return
+            }
+
+            let docsUrl = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            let dirUrl = docsUrl.appendingPathComponent("PureTube", isDirectory: true)
+            try? FileManager.default.createDirectory(at: dirUrl, withIntermediateDirectories: true)
+            let fileUrl = dirUrl.appendingPathComponent(finalName)
+            FileManager.default.createFile(atPath: fileUrl.path, contents: nil)
+            guard let fh = try? FileHandle(forWritingTo: fileUrl) else {
+                call.reject("Không thể mở tệp đích trên iPhone.")
+                return
+            }
+            defer { try? fh.close() }
+
+            var chunkSpan: Int64 = total < 35_000_000 ? 262_144 : 524_288
+            var cursor: Int64 = 0
+            var lastPct = -1
+            while cursor < total {
+                let subEnd = min(cursor + chunkSpan - 1, total - 1)
+                guard let (status, _, _, data) = self.fetchUpstreamSync(urlStr: spec.url, headers: spec.headers, rangeHeader: "bytes=\(cursor)-\(subEnd)") else {
+                    try? FileManager.default.removeItem(at: fileUrl)
+                    call.reject("Lỗi mạng khi tải tệp.")
+                    return
+                }
+                if status == 403 && chunkSpan > 65_536 {
+                    chunkSpan /= 2
+                    continue
+                }
+                guard (status == 200 || status == 206), !data.isEmpty else {
+                    try? FileManager.default.removeItem(at: fileUrl)
+                    call.reject("Máy chủ từ chối tải tệp (\(status)).")
+                    return
+                }
+                fh.write(data)
+                cursor += Int64(data.count)
+                let pct = Int(min(100, (cursor * 100) / total))
+                if pct >= lastPct + 5 || pct == 100 {
+                    lastPct = pct
+                    self.notifyListeners("downloadProgress", data: ["filename": finalName, "percent": pct])
+                }
+            }
+
+            call.resolve([
+                "filename": finalName,
+                "savedPath": "Tệp (Files)/PureTube/\(finalName)",
+                "bytes": total
+            ])
+        }
+    }
+
+    @objc func updateMediaNotification(_ call: CAPPluginCall) {
+        let clear = call.getBool("clear") ?? false
+        if clear {
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            call.resolve()
+            return
+        }
+        let title = call.getString("title") ?? "PureTube"
+        let artist = call.getString("artist") ?? "Đang phát"
+        let playing = call.getBool("playing") ?? true
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = [
+            MPMediaItemPropertyTitle: title,
+            MPMediaItemPropertyArtist: artist,
+            MPNowPlayingInfoPropertyPlaybackRate: playing ? 1.0 : 0.0
+        ]
+        call.resolve()
     }
 
     private func executeRequest(

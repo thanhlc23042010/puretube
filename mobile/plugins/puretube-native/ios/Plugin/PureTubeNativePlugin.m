@@ -7,4 +7,7 @@ CAP_PLUGIN(PureTubeNativePlugin, "PureTubeNative",
     CAP_PLUGIN_METHOD(httpPostJson, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(httpPostForm, CAPPluginReturnPromise);
     CAP_PLUGIN_METHOD(registerStream, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(registerHls, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(downloadToDevice, CAPPluginReturnPromise);
+    CAP_PLUGIN_METHOD(updateMediaNotification, CAPPluginReturnPromise);
 )

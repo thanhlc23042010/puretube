@@ -6,6 +6,7 @@ const PurePlayer = {
   isAudioOnly: false,
   isDualStream: false,
   playbackRate: 1,
+  hlsInstance: null,
   isMuted: false,
   volume: 1,
   isSeekingScrubber: false,
@@ -77,6 +78,13 @@ const PurePlayer = {
 
     this.bindEvents();
     this.setupMediaSession();
+    PureAPI.addNativeListener("mediaControlAction", (ev) => {
+      const act = ev?.action;
+      if (act === "play") this.play();
+      else if (act === "pause") this.pause();
+      else if (act === "next" && this.onNextCallback) this.onNextCallback();
+      else if (act === "prev" && this.onPrevCallback) this.onPrevCallback();
+    });
   },
 
   activeMedia() {
@@ -126,12 +134,21 @@ const PurePlayer = {
     const { video, audio, dubAudio, stage, scrubber } = this.els;
 
     const onPlayStateChange = () => {
+      const playing = this.isPlaying();
       this.updatePlayIcons();
       this.scheduleHideControls();
       if ("mediaSession" in navigator) {
-        navigator.mediaSession.playbackState = this.isPlaying() ? "playing" : "paused";
+        navigator.mediaSession.playbackState = playing ? "playing" : "paused";
       }
-      if (!this.isPlaying()) {
+      if (this.videoData) {
+        PureAPI.updateMediaNotification({
+          title: this.videoData.title,
+          artist: this.videoData.channel,
+          playing,
+          clear: false,
+        });
+      }
+      if (!playing) {
         this.stopDubSpeech();
       }
     };
@@ -632,6 +649,56 @@ const PurePlayer = {
     btnAudioOnly.classList.remove("active");
     audioOnlyLabel.textContent = "Chỉ âm thanh";
 
+    if (this.hlsInstance) {
+      try {
+        this.hlsInstance.destroy();
+      } catch (_) {}
+      this.hlsInstance = null;
+    }
+
+    if (this.videoData.is_live && this.videoData.hls_url) {
+      const hlsSrc = PureAPI.resolveUrl(this.videoData.hls_url);
+      this.isDualStream = false;
+      audio.removeAttribute("src");
+      audio.load();
+      video.muted = this.isMuted;
+      video.volume = this.isDubSpeaking ? Math.min(this.volume, 0.2) : this.volume;
+
+      if (window.Hls && window.Hls.isSupported()) {
+        const hls = new window.Hls({ lowLatencyMode: true, enableWorker: true });
+        this.hlsInstance = hls;
+        hls.loadSource(hlsSrc);
+        hls.attachMedia(video);
+        hls.on(window.Hls.Events.MANIFEST_PARSED, () => {
+          clearTimeout(this._loadWatchdogTimer);
+          if (autoPlay) this.play();
+        });
+        hls.on(window.Hls.Events.ERROR, (_ev, data) => {
+          if (!data?.fatal) return;
+          if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+            hls.startLoad();
+          } else {
+            this.handleMediaError("hls");
+          }
+        });
+        this.showControls();
+        return;
+      }
+      if (video.canPlayType("application/vnd.apple.mpegurl")) {
+        video.src = hlsSrc;
+        video.addEventListener(
+          "loadedmetadata",
+          () => {
+            clearTimeout(this._loadWatchdogTimer);
+            if (autoPlay) this.play();
+          },
+          { once: true }
+        );
+        video.load();
+        return;
+      }
+    }
+
     if (!this.currentQuality) {
       this.showSpinner(false);
       return;
@@ -737,7 +804,7 @@ const PurePlayer = {
 
   play() {
     const media = this.activeMedia();
-    if (!media || !media.src) return;
+    if (!media || (!media.src && !media.srcObject && !this.hlsInstance)) return;
     media.play().catch(() => {});
     if (this.isDualStream && !this.isAudioOnly) {
       if (this.els.audio.readyState >= 1) {
@@ -766,6 +833,13 @@ const PurePlayer = {
   stop() {
     clearTimeout(this._loadWatchdogTimer);
     this._recoveryStep = 0;
+    if (this.hlsInstance) {
+      try {
+        this.hlsInstance.destroy();
+      } catch (_) {}
+      this.hlsInstance = null;
+    }
+    PureAPI.updateMediaNotification({ clear: true });
     this.els.video.pause();
     this.els.audio.pause();
     this.stopDubSpeech();

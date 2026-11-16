@@ -1,5 +1,4 @@
 import plistlib
-import re
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -17,31 +16,41 @@ def patch_android() -> None:
             xml_text = xml_text.replace("<application", '<application\n        android:usesCleartextTraffic="true"', 1)
         if 'android:supportsPictureInPicture="true"' not in xml_text:
             xml_text = xml_text.replace("<activity", '<activity\n            android:supportsPictureInPicture="true"', 1)
-        if "android.permission.WAKE_LOCK" not in xml_text:
-            xml_text = xml_text.replace(
-                "<uses-permission android:name=\"android.permission.INTERNET\" />",
-                '<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="android.permission.WAKE_LOCK" />',
-                1,
-            )
+        for perm in (
+            "android.permission.WAKE_LOCK",
+            "android.permission.FOREGROUND_SERVICE",
+            "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+            "android.permission.POST_NOTIFICATIONS",
+        ):
+            if perm not in xml_text:
+                xml_text = xml_text.replace(
+                    '<uses-permission android:name="android.permission.INTERNET" />',
+                    f'<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="{perm}" />',
+                    1,
+                )
         ANDROID_MANIFEST.write_text(xml_text, encoding="utf-8")
-        # Validate XML stays well-formed
         ET.fromstring(xml_text)
         print("Patched AndroidManifest.xml cleanly.")
 
     if ANDROID_MAIN_ACTIVITY.exists():
         java_code = (
             "package com.puretube.app;\n\n"
-            "import android.os.Bundle;\n"
+            "import android.os.Build;\n"
             "import android.webkit.WebSettings;\n"
+            "import android.webkit.WebView;\n"
             "import com.getcapacitor.BridgeActivity;\n\n"
             "public class MainActivity extends BridgeActivity {\n"
             "    @Override\n"
             "    public void onStart() {\n"
             "        super.onStart();\n"
             "        if (this.bridge != null && this.bridge.getWebView() != null) {\n"
-            "            WebSettings settings = this.bridge.getWebView().getSettings();\n"
+            "            WebView wv = this.bridge.getWebView();\n"
+            "            WebSettings settings = wv.getSettings();\n"
             "            settings.setMediaPlaybackRequiresUserGesture(false);\n"
             "            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);\n"
+            "            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {\n"
+            "                wv.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false);\n"
+            "            }\n"
             "        }\n"
             "    }\n"
             "}\n"
@@ -51,7 +60,7 @@ def patch_android() -> None:
 
 
 def patch_ios() -> None:
-    """Configure iOS Info.plist for background audio playback & HTTPS/HTTP flexibility."""
+    """Configure iOS Info.plist for background audio playback, file sharing, and HTTPS/HTTP flexibility."""
     if not IOS_INFO_PLIST.exists():
         return
     with IOS_INFO_PLIST.open("rb") as f:
@@ -66,6 +75,8 @@ def patch_ios() -> None:
     ats["NSAllowsArbitraryLoads"] = True
     pl["NSAppTransportSecurity"] = ats
 
+    pl["UIFileSharingEnabled"] = True
+    pl["LSSupportsOpeningDocumentsInPlace"] = True
     pl["CFBundleDisplayName"] = "PureTube"
     with IOS_INFO_PLIST.open("wb") as f:
         plistlib.dump(pl, f)

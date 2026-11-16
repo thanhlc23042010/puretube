@@ -1,8 +1,9 @@
-const CACHE_NAME = "puretube-shell-v2";
+const CACHE_NAME = "puretube-shell-v3";
 const SHELL_ASSETS = [
   "/",
   "/index.html",
   "/css/styles.css",
+  "/js/hls.min.js",
   "/js/store.js",
   "/js/standalone-bridge.js",
   "/js/api.js",

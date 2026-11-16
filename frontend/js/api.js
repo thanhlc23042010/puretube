@@ -119,9 +119,75 @@ const PureAPI = {
     return this.getTtsUrl(text, voice);
   },
 
-  getChannel(channelName) {
-    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getChannel(channelName);
-    return this.fetchJson(`/api/channel/${encodeURIComponent(channelName)}`);
+  getChannel(channelName, tab = "videos") {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getChannel(channelName, tab);
+    return this.fetchJson(`/api/channel/${encodeURIComponent(channelName)}?tab=${encodeURIComponent(tab)}`);
+  },
+
+  getShorts(q = "") {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getShorts(q);
+    return this.fetchJson(`/api/shorts?q=${encodeURIComponent(q)}`);
+  },
+
+  subscribeChannel(channelId, subscribe = true) {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.subscribeChannel(channelId, subscribe);
+    return this.fetchJson("/api/channel/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel_id: channelId, subscribe }),
+    });
+  },
+
+  getComments(videoId, continuation = "") {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getComments(videoId, continuation);
+    return this.fetchJson(
+      `/api/comments/${encodeURIComponent(videoId)}?continuation=${encodeURIComponent(continuation)}`
+    );
+  },
+
+  reactVideo(videoId, action = "like") {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.reactVideo(videoId, action);
+    return this.fetchJson(`/api/video/${encodeURIComponent(videoId)}/react`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+  },
+
+  getYoutubePlaylists(videoId = "") {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getYoutubePlaylists(videoId);
+    return this.fetchJson(`/api/playlists/youtube?video_id=${encodeURIComponent(videoId)}`);
+  },
+
+  getYoutubePlaylistItems(playlistId) {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getYoutubePlaylistItems(playlistId);
+    return this.fetchJson(`/api/playlists/youtube/${encodeURIComponent(playlistId)}`);
+  },
+
+  addVideoToYoutubePlaylist(playlistId, videoId, remove = false) {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.addVideoToYoutubePlaylist(playlistId, videoId, remove);
+    return this.fetchJson("/api/playlists/youtube/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ playlist_id: playlistId, video_id: videoId, remove }),
+    });
+  },
+
+  downloadToDevice(videoData, mode = "video") {
+    return window.PureStandaloneBridge.downloadToDevice(videoData, mode);
+  },
+
+  updateMediaNotification(opts) {
+    if (window.PureStandaloneBridge?.isAvailable()) {
+      window.PureStandaloneBridge.updateMediaNotification(opts);
+    }
+  },
+
+  addNativeListener(eventName, cb) {
+    if (window.PureStandaloneBridge?.isAvailable()) {
+      return window.PureStandaloneBridge.addNativeListener(eventName, cb);
+    }
+    return null;
   },
 
   getAuthStatus() {

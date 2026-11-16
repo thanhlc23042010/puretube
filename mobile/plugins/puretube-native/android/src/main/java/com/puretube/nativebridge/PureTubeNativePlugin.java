@@ -1,5 +1,13 @@
 package com.puretube.nativebridge;
 
+import android.content.ContentResolver;
+import android.content.ContentValues;
+import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Environment;
+import android.provider.MediaStore;
 import android.util.Base64;
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -9,6 +17,8 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -36,6 +46,7 @@ import java.util.regex.Pattern;
 public class PureTubeNativePlugin extends Plugin {
     private static final Pattern CONTENT_RANGE_TOTAL = Pattern.compile("/(\\d+)$");
     private static final Pattern RANGE_BYTES_PATTERN = Pattern.compile("bytes=(\\d*)-(\\d*)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern M3U8_URI_ATTR = Pattern.compile("URI=\"([^\"]+)\"");
     private static final int MAX_STREAMS = 96;
 
     private static final class StreamSpec {
@@ -64,10 +75,24 @@ public class PureTubeNativePlugin extends Plugin {
     public void load() {
         super.load();
         ensureProxyStarted();
+        PureTubeMediaService.actionListener = action -> {
+            JSObject ev = new JSObject();
+            ev.put("action", action);
+            notifyListeners("mediaControlAction", ev);
+        };
     }
 
     @Override
     protected void handleOnDestroy() {
+        PureTubeMediaService.actionListener = null;
+        try {
+            Context ctx = getContext();
+            if (ctx != null) {
+                Intent stopIntent = new Intent(ctx, PureTubeMediaService.class);
+                stopIntent.setAction(PureTubeMediaService.ACTION_STOP);
+                ctx.startService(stopIntent);
+            }
+        } catch (Exception ignored) {}
         synchronized (proxyLock) {
             if (proxySocket != null) {
                 try {
@@ -199,6 +224,109 @@ public class PureTubeNativePlugin extends Plugin {
         out.flush();
     }
 
+    private String rewriteM3u8Playlist(String body, String baseUrl, String streamId) {
+        String proxyPrefix = "http://127.0.0.1:" + proxyPort + "/hls-seg?id=" + streamId + "&u=";
+        StringBuilder out = new StringBuilder(body.length() + 512);
+        String[] lines = body.split("\\r?\\n");
+        for (String line : lines) {
+            if (line.startsWith("#")) {
+                Matcher m = M3U8_URI_ATTR.matcher(line);
+                if (m.find()) {
+                    StringBuffer sb = new StringBuffer();
+                    m.reset();
+                    while (m.find()) {
+                        try {
+                            String abs = new URL(new URL(baseUrl), m.group(1)).toString();
+                            String rep = "URI=\"" + proxyPrefix + URLEncoder.encode(abs, "UTF-8") + "\"";
+                            m.appendReplacement(sb, Matcher.quoteReplacement(rep));
+                        } catch (Exception e) {
+                            m.appendReplacement(sb, Matcher.quoteReplacement(m.group(0)));
+                        }
+                    }
+                    m.appendTail(sb);
+                    out.append(sb.toString()).append('\n');
+                } else {
+                    out.append(line).append('\n');
+                }
+            } else if (!line.trim().isEmpty()) {
+                try {
+                    String abs = new URL(new URL(baseUrl), line.trim()).toString();
+                    out.append(proxyPrefix).append(URLEncoder.encode(abs, "UTF-8")).append('\n');
+                } catch (Exception e) {
+                    out.append(line).append('\n');
+                }
+            } else {
+                out.append(line).append('\n');
+            }
+        }
+        return out.toString();
+    }
+
+    private void handleHlsRequest(String target, StreamSpec spec, String streamId, OutputStream rawOut, boolean isSeg)
+        throws IOException {
+        String upstreamUrl = spec.url;
+        if (isSeg) {
+            String uParam = extractQueryParam(target, "u");
+            if (uParam == null || uParam.isEmpty()) {
+                writeSimpleResponse(rawOut, 400, "Bad Request", null);
+                return;
+            }
+            upstreamUrl = uParam;
+        }
+
+        HttpURLConnection conn = null;
+        try {
+            conn = openUpstream(upstreamUrl, spec.headers, null);
+            int status = conn.getResponseCode();
+            if (status >= 400) {
+                writeSimpleResponse(rawOut, status, "Upstream Error", null);
+                return;
+            }
+            String finalUrl = conn.getURL() != null ? conn.getURL().toString() : upstreamUrl;
+            String ct = conn.getContentType();
+            ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            try (InputStream in = conn.getInputStream()) {
+                byte[] chunk = new byte[16384];
+                int n;
+                while ((n = in.read(chunk)) != -1) {
+                    buffer.write(chunk, 0, n);
+                }
+            }
+            byte[] bytes = buffer.toByteArray();
+            boolean isManifest = !isSeg
+                || finalUrl.contains(".m3u8")
+                || (ct != null && ct.toLowerCase(Locale.US).contains("mpegurl"))
+                || (bytes.length >= 7 && new String(bytes, 0, 7, StandardCharsets.US_ASCII).equals("#EXTM3U"));
+
+            if (isManifest) {
+                String text = new String(bytes, StandardCharsets.UTF_8);
+                byte[] rewritten = rewriteM3u8Playlist(text, finalUrl, streamId).getBytes(StandardCharsets.UTF_8);
+                String hdr = "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: application/vnd.apple.mpegurl\r\n" +
+                    "Content-Length: " + rewritten.length + "\r\n" +
+                    "Cache-Control: no-store\r\n" +
+                    "Access-Control-Allow-Origin: *\r\n" +
+                    "Connection: close\r\n\r\n";
+                rawOut.write(hdr.getBytes(StandardCharsets.US_ASCII));
+                rawOut.write(rewritten);
+                rawOut.flush();
+                return;
+            }
+
+            String hdr = "HTTP/1.1 200 OK\r\n" +
+                "Content-Type: " + (ct != null ? ct : "video/mp2t") + "\r\n" +
+                "Content-Length: " + bytes.length + "\r\n" +
+                "Cache-Control: no-store\r\n" +
+                "Access-Control-Allow-Origin: *\r\n" +
+                "Connection: close\r\n\r\n";
+            rawOut.write(hdr.getBytes(StandardCharsets.US_ASCII));
+            rawOut.write(bytes);
+            rawOut.flush();
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+    }
+
     private void handleProxyClient(Socket client) {
         try {
             client.setSoTimeout(30000);
@@ -230,6 +358,10 @@ public class PureTubeNativePlugin extends Plugin {
                 }
             }
 
+            if ("OPTIONS".equals(method)) {
+                writeSimpleResponse(rawOut, 204, "No Content", "Access-Control-Allow-Methods: GET, HEAD, OPTIONS\r\nAccess-Control-Allow-Headers: *\r\n");
+                return;
+            }
             if (!"GET".equals(method) && !"HEAD".equals(method)) {
                 writeSimpleResponse(rawOut, 405, "Method Not Allowed", null);
                 return;
@@ -239,6 +371,15 @@ public class PureTubeNativePlugin extends Plugin {
             StreamSpec spec = streamId != null ? streamRegistry.get(streamId) : null;
             if (spec == null) {
                 writeSimpleResponse(rawOut, 404, "Not Found", null);
+                return;
+            }
+
+            if (target.startsWith("/hls-seg")) {
+                handleHlsRequest(target, spec, streamId, rawOut, true);
+                return;
+            }
+            if (target.startsWith("/hls")) {
+                handleHlsRequest(target, spec, streamId, rawOut, false);
                 return;
             }
 
@@ -298,10 +439,10 @@ public class PureTubeNativePlugin extends Plugin {
                 return;
             }
 
-            streamChunkedBody(spec, reqStart, reqEnd, rawOut);
+            streamChunkedBody(spec, reqStart, reqEnd, rawOut, null);
             rawOut.flush();
         } catch (IOException ignored) {
-            // Normal when WebView cancels preload or seeks to a new position
+            // Normal when WebView cancels preload or seeks
         } finally {
             try {
                 client.close();
@@ -309,10 +450,21 @@ public class PureTubeNativePlugin extends Plugin {
         }
     }
 
-    private static void streamChunkedBody(StreamSpec spec, long start, long end, OutputStream clientOut)
-        throws IOException {
+    private interface ProgressCallback {
+        void onBytes(long copied, long total);
+    }
+
+    private static void streamChunkedBody(
+        StreamSpec spec,
+        long start,
+        long end,
+        OutputStream clientOut,
+        ProgressCallback cb
+    ) throws IOException {
         long chunkSpan = (spec.totalLength > 0 && spec.totalLength < 35_000_000L) ? 262_144L : 524_288L;
         long cursor = start;
+        long totalToCopy = (end - start) + 1;
+        long totalCopied = 0;
         byte[] buf = new byte[16384];
 
         while (cursor <= end) {
@@ -335,6 +487,8 @@ public class PureTubeNativePlugin extends Plugin {
                     while (received < expected && (n = in.read(buf, 0, (int) Math.min(buf.length, expected - received))) != -1) {
                         clientOut.write(buf, 0, n);
                         received += n;
+                        totalCopied += n;
+                        if (cb != null) cb.onBytes(totalCopied, totalToCopy);
                     }
                     clientOut.flush();
                 }
@@ -365,17 +519,16 @@ public class PureTubeNativePlugin extends Plugin {
         return null;
     }
 
-    @PluginMethod
-    public void registerStream(PluginCall call) {
+    private JSObject registerStreamInternal(PluginCall call, String pathPrefix) {
         String url = call.getString("url", "");
         if (url == null || url.isEmpty()) {
             call.reject("Missing url");
-            return;
+            return null;
         }
         int port = ensureProxyStarted();
         if (port <= 0) {
             call.reject("Failed to start local media proxy");
-            return;
+            return null;
         }
         Map<String, String> headers = toHeaderMap(call.getObject("headers", new JSObject()));
         long contentLength = 0L;
@@ -394,8 +547,141 @@ public class PureTubeNativePlugin extends Plugin {
         streamRegistry.put(id, new StreamSpec(url, headers, contentLength, mimeType));
 
         JSObject out = new JSObject();
-        out.put("proxyUrl", "http://127.0.0.1:" + port + "/stream?id=" + id);
-        call.resolve(out);
+        out.put("proxyUrl", "http://127.0.0.1:" + port + pathPrefix + "?id=" + id);
+        return out;
+    }
+
+    @PluginMethod
+    public void registerStream(PluginCall call) {
+        JSObject out = registerStreamInternal(call, "/stream");
+        if (out != null) call.resolve(out);
+    }
+
+    @PluginMethod
+    public void registerHls(PluginCall call) {
+        JSObject out = registerStreamInternal(call, "/hls");
+        if (out != null) call.resolve(out);
+    }
+
+    @PluginMethod
+    public void downloadToDevice(PluginCall call) {
+        String url = call.getString("url", "");
+        String rawName = call.getString("filename", "puretube_media.mp4");
+        String mimeType = call.getString("mimeType", "video/mp4");
+        if (url == null || url.isEmpty()) {
+            call.reject("Missing url");
+            return;
+        }
+        String safeName = rawName.replaceAll("[\\\\/:*?\"<>|]+", "_").trim();
+        if (safeName.isEmpty()) safeName = "puretube_media.mp4";
+        final String finalName = safeName;
+        final Map<String, String> headers = toHeaderMap(call.getObject("headers", new JSObject()));
+        long rawLen = 0L;
+        Object lenObj = call.getData().opt("contentLength");
+        if (lenObj instanceof Number) rawLen = ((Number) lenObj).longValue();
+        final long initLen = rawLen;
+
+        executor.execute(() -> {
+            StreamSpec spec = new StreamSpec(url, headers, initLen, mimeType);
+            if (spec.totalLength <= 0) {
+                probeStreamMeta(spec);
+            }
+            if (spec.totalLength <= 0) {
+                call.reject("Không xác định được kích thước tệp để tải về.");
+                return;
+            }
+            Context ctx = getContext();
+            if (ctx == null) {
+                call.reject("No application context");
+                return;
+            }
+
+            final int[] lastPct = new int[]{-1};
+            ProgressCallback pcb = (copied, total) -> {
+                if (total > 0) {
+                    int pct = (int) Math.min(100, (copied * 100L) / total);
+                    if (pct >= lastPct[0] + 5 || pct == 100) {
+                        lastPct[0] = pct;
+                        JSObject prog = new JSObject();
+                        prog.put("filename", finalName);
+                        prog.put("percent", pct);
+                        notifyListeners("downloadProgress", prog);
+                    }
+                }
+            };
+
+            try {
+                String savedPath;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    ContentResolver resolver = ctx.getContentResolver();
+                    ContentValues cv = new ContentValues();
+                    cv.put(MediaStore.MediaColumns.DISPLAY_NAME, finalName);
+                    cv.put(MediaStore.MediaColumns.MIME_TYPE, mimeType);
+                    cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/PureTube");
+                    cv.put(MediaStore.MediaColumns.IS_PENDING, 1);
+                    Uri uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    if (uri == null) {
+                        throw new IOException("Không tạo được tệp trong thư mục Downloads.");
+                    }
+                    try (OutputStream os = new BufferedOutputStream(resolver.openOutputStream(uri), 32768)) {
+                        streamChunkedBody(spec, 0, spec.totalLength - 1, os, pcb);
+                        os.flush();
+                    } catch (IOException ex) {
+                        resolver.delete(uri, null, null);
+                        throw ex;
+                    }
+                    ContentValues done = new ContentValues();
+                    done.put(MediaStore.MediaColumns.IS_PENDING, 0);
+                    resolver.update(uri, done, null, null);
+                    savedPath = "Downloads/PureTube/" + finalName;
+                } else {
+                    File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "PureTube");
+                    if (!dir.exists()) dir.mkdirs();
+                    File outFile = new File(dir, finalName);
+                    try (OutputStream os = new BufferedOutputStream(new FileOutputStream(outFile), 32768)) {
+                        streamChunkedBody(spec, 0, spec.totalLength - 1, os, pcb);
+                        os.flush();
+                    }
+                    savedPath = outFile.getAbsolutePath();
+                }
+
+                JSObject res = new JSObject();
+                res.put("filename", finalName);
+                res.put("savedPath", savedPath);
+                res.put("bytes", spec.totalLength);
+                call.resolve(res);
+            } catch (Exception ex) {
+                call.reject("Lỗi tải tệp offline: " + ex.getMessage(), ex);
+            }
+        });
+    }
+
+    @PluginMethod
+    public void updateMediaNotification(PluginCall call) {
+        Context ctx = getContext();
+        if (ctx == null) {
+            call.resolve();
+            return;
+        }
+        boolean clear = Boolean.TRUE.equals(call.getBoolean("clear", false));
+        try {
+            Intent intent = new Intent(ctx, PureTubeMediaService.class);
+            if (clear) {
+                intent.setAction(PureTubeMediaService.ACTION_STOP);
+                ctx.startService(intent);
+            } else {
+                intent.setAction(PureTubeMediaService.ACTION_UPDATE);
+                intent.putExtra("title", call.getString("title", "PureTube"));
+                intent.putExtra("artist", call.getString("artist", "Đang phát"));
+                intent.putExtra("playing", Boolean.TRUE.equals(call.getBoolean("playing", true)));
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    ctx.startForegroundService(intent);
+                } else {
+                    ctx.startService(intent);
+                }
+            }
+        } catch (Exception ignored) {}
+        call.resolve();
     }
 
     private void executeRequest(

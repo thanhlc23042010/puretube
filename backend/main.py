@@ -768,10 +768,11 @@ def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
             }
         )
 
-    if not ytdlp_like_formats:
-        return None
-
+    hls_manifest_url = str(streaming.get("hlsManifestUrl") or "")
     details = data.get("videoDetails") or {}
+    is_live = bool(details.get("isLive") or details.get("isLiveContent"))
+    if not ytdlp_like_formats and not hls_manifest_url:
+        return None
     subtitles: Dict[str, List[Dict[str, str]]] = {}
     auto_captions: Dict[str, List[Dict[str, str]]] = {}
     cap_tracks = (
@@ -813,6 +814,9 @@ def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
         "like_count": 0,
         "upload_date": "",
         "description": details.get("shortDescription") or "",
+        "is_live": is_live,
+        "hls_manifest_url": hls_manifest_url,
+        "hls_headers": req_headers,
         "formats": ytdlp_like_formats,
         "subtitles": subtitles,
         "automatic_captions": auto_captions,
@@ -856,9 +860,12 @@ def extract_video_sync(video_id: str, force_refresh: bool = False) -> Dict[str, 
         info = _extract_via_ytdlp_sync(video_id)
 
     classified = select_best_formats(info.get("formats") or [], video_id)
-    if used_innertube and not classified["qualities"]:
+    if used_innertube and not classified["qualities"] and not info.get("hls_manifest_url"):
         info = _extract_via_ytdlp_sync(video_id)
         classified = select_best_formats(info.get("formats") or [], video_id)
+
+    hls_manifest_url = info.get("hls_manifest_url") or ""
+    is_live = bool(info.get("is_live") or hls_manifest_url)
 
     chapters = [
         {
@@ -890,6 +897,8 @@ def extract_video_sync(video_id: str, force_refresh: bool = False) -> Dict[str, 
         "has_youtube_vi_dub": classified["has_youtube_vi_dub"],
         "default_audio_track": classified["default_audio_track"],
         "audio_stream_url": classified["audio_stream_url"],
+        "is_live": is_live,
+        "hls_url": f"/api/hls/{video_id}" if hls_manifest_url else "",
         "chapters": chapters,
     }
 
@@ -897,6 +906,8 @@ def extract_video_sync(video_id: str, force_refresh: bool = False) -> Dict[str, 
         "expires_at": time.time() + STREAM_CACHE_TTL,
         "format_map": classified["format_map"],
         "video_data": video_data,
+        "hls_manifest_url": hls_manifest_url,
+        "hls_headers": info.get("hls_headers") or {"User-Agent": ANDROID_INNERTUBE_UA},
         "captions_info": {
             "language": info.get("language") or "",
             "subtitles": info.get("subtitles") or {},
@@ -1476,6 +1487,292 @@ def extract_videos_from_innertube(payload: Any, limit: int = 40) -> List[Dict[st
     return results
 
 
+WEB_INNERTUBE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
+TV_INNERTUBE_UA = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"
+
+
+async def innertube_web_post(endpoint: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Send an unauthenticated YouTube WEB InnerTube request with cached visitorData."""
+    vd = await asyncio.to_thread(get_visitor_data_sync)
+    payload = dict(body)
+    ctx_client = {"clientName": "WEB", "clientVersion": "2.20250312.04.00", "hl": "vi", "gl": "VN"}
+    if vd:
+        ctx_client["visitorData"] = vd
+    payload["context"] = {"client": ctx_client}
+    headers = {"User-Agent": WEB_INNERTUBE_UA, "Content-Type": "application/json"}
+    if vd:
+        headers["X-Goog-Visitor-Id"] = vd
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        resp = await client.post(
+            f"https://www.youtube.com/youtubei/v1/{endpoint}?prettyPrint=false",
+            headers=headers,
+            json=payload,
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"YouTube phản hồi lỗi ({resp.status_code}).")
+    return resp.json()
+
+
+async def innertube_tv_post(endpoint: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Send an OAuth-authenticated TVHTML5 InnerTube request (auto-refreshing expired tokens)."""
+    token = await get_valid_oauth_token()
+    if not token:
+        raise HTTPException(status_code=401, detail="Vui lòng đăng nhập Tài khoản Google để dùng tính năng này.")
+    payload = dict(body)
+    payload["context"] = {"client": {"clientName": "TVHTML5", "clientVersion": "7.20250312.14.00", "hl": "vi", "gl": "VN"}}
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        resp = await client.post(
+            f"https://www.youtube.com/youtubei/v1/{endpoint}?prettyPrint=false",
+            headers={"Authorization": f"Bearer {token}", "User-Agent": TV_INNERTUBE_UA, "Content-Type": "application/json"},
+            json=payload,
+        )
+        if resp.status_code == 401:
+            token = await get_valid_oauth_token(force_refresh=True) or token
+            resp = await client.post(
+                f"https://www.youtube.com/youtubei/v1/{endpoint}?prettyPrint=false",
+                headers={"Authorization": f"Bearer {token}", "User-Agent": TV_INNERTUBE_UA, "Content-Type": "application/json"},
+                json=payload,
+            )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"YouTube từ chối thao tác ({resp.status_code}).")
+    return resp.json()
+
+
+def extract_shorts_from_innertube(payload: Any, limit: int = 30) -> List[Dict[str, Any]]:
+    """Extract Shorts vertical video items (shortsLockupViewModel / reelItemRenderer) cleanly."""
+    results: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    def _add_short(vid: str, title: str, channel: str = "YouTube Shorts", view_text: str = "") -> None:
+        if not vid or not re.fullmatch(r"[A-Za-z0-9_-]{11}", vid) or vid in seen or len(results) >= limit:
+            return
+        seen.add(vid)
+        results.append(
+            {
+                "id": vid,
+                "title": title or "YouTube Short",
+                "channel": channel or "YouTube Shorts",
+                "channel_id": "",
+                "duration": 60,
+                "duration_text": "Short",
+                "view_count": parse_view_count_text(view_text),
+                "is_short": True,
+                "thumbnail": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+            }
+        )
+
+    def _walk(node: Any) -> None:
+        if len(results) >= limit:
+            return
+        if isinstance(node, list):
+            for el in node:
+                _walk(el)
+            return
+        if not isinstance(node, dict):
+            return
+
+        if "shortsLockupViewModel" in node and isinstance(node["shortsLockupViewModel"], dict):
+            vm = node["shortsLockupViewModel"]
+            vid = (vm.get("onTap") or {}).get("innertubeCommand", {}).get("reelWatchEndpoint", {}).get("videoId") or ""
+            acc = str(vm.get("accessibilityText") or "").split("– phát video")[0].strip()
+            _add_short(str(vid), acc or "YouTube Short", "YouTube Shorts", acc)
+
+        if "reelItemRenderer" in node and isinstance(node["reelItemRenderer"], dict):
+            rr = node["reelItemRenderer"]
+            vid = rr.get("videoId") or ""
+            title = extract_yt_text(rr.get("headline"))
+            vtxt = extract_yt_text(rr.get("viewCountText"))
+            _add_short(str(vid), title, "YouTube Shorts", vtxt)
+
+        if "lockupViewModel" in node and isinstance(node["lockupViewModel"], dict):
+            vm = node["lockupViewModel"]
+            if vm.get("contentType") == "LOCKUP_CONTENT_TYPE_SHORT":
+                vid = vm.get("contentId") or ""
+                title = extract_yt_text((vm.get("metadata") or {}).get("lockupMetadataViewModel", {}).get("title"))
+                _add_short(str(vid), title)
+
+        for v in node.values():
+            _walk(v)
+
+    _walk(payload)
+    return results
+
+
+def parse_comments_payload(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse YouTube WEB /next comment mutations & continuation tokens cleanly."""
+    mutations = (data.get("frameworkUpdates") or {}).get("entityBatchUpdate", {}).get("mutations") or []
+    comments: List[Dict[str, Any]] = []
+    comment_map: Dict[str, Dict[str, Any]] = {}
+    for mut in mutations:
+        cep = (mut.get("payload") or {}).get("commentEntityPayload")
+        if not cep:
+            continue
+        props = cep.get("properties") or {}
+        cid = props.get("commentId") or ""
+        if not cid:
+            continue
+        author = cep.get("author") or {}
+        toolbar = cep.get("toolbar") or {}
+        entry = {
+            "id": cid,
+            "author": author.get("displayName") or "Người xem",
+            "author_channel_id": author.get("channelId") or "",
+            "avatar": author.get("avatarThumbnailUrl") or "",
+            "is_creator": bool(author.get("isCreator")),
+            "text": (props.get("content") or {}).get("content") or "",
+            "published": props.get("publishedTime") or "",
+            "likes": str(toolbar.get("likeCountNotliked") or "").strip(),
+            "reply_count": str(toolbar.get("replyCount") or "").strip(),
+            "hearted": bool(toolbar.get("heartActiveTooltip")),
+            "reply_token": "",
+        }
+        comments.append(entry)
+        comment_map[cid] = entry
+
+    next_token = ""
+
+    def _walk_eps(node: Any) -> None:
+        nonlocal next_token
+        if isinstance(node, list):
+            for el in node:
+                _walk_eps(el)
+            return
+        if not isinstance(node, dict):
+            return
+        if "commentThreadRenderer" in node and isinstance(node["commentThreadRenderer"], dict):
+            ct = node["commentThreadRenderer"]
+            ckey = ((ct.get("commentViewModel") or {}).get("commentViewModel") or {}).get("commentId") or ""
+            rep_contents = (ct.get("replies") or {}).get("commentRepliesRenderer", {}).get("contents") or []
+            for rc in rep_contents:
+                tok = (rc.get("continuationItemRenderer") or {}).get("continuationEndpoint", {}).get("continuationCommand", {}).get("token") or ""
+                if tok:
+                    if ckey and ckey in comment_map:
+                        comment_map[ckey]["reply_token"] = tok
+                    elif comments:
+                        # fallback match via commentId prefix in thread
+                        pass
+            if not (ckey and ckey in comment_map):
+                raw_s = json.dumps(ct)
+                m_rep = re.search(r'"commentRepliesRenderer".*?"token"\s*:\s*"([^"]+)"', raw_s)
+                if m_rep:
+                    for c in comments:
+                        if c["id"] in raw_s and not c["reply_token"]:
+                            c["reply_token"] = m_rep.group(1)
+                            break
+        if "continuationItemRenderer" in node and not next_token:
+            ci = node["continuationItemRenderer"]
+            tok = (
+                (ci.get("continuationEndpoint") or {}).get("continuationCommand", {}).get("token")
+                or (ci.get("button") or {}).get("buttonRenderer", {}).get("command", {}).get("continuationCommand", {}).get("token")
+                or ""
+            )
+            if tok:
+                next_token = tok
+        for k, v in node.items():
+            if k not in ("commentThreadRenderer",):
+                _walk_eps(v)
+
+    _walk_eps(data.get("onResponseReceivedEndpoints") or [])
+    return {"comments": comments, "next_continuation": next_token}
+
+
+def extract_playlists_from_innertube(payload: Any) -> List[Dict[str, Any]]:
+    """Extract YouTube playlist entries cleanly from browse / FElibrary responses."""
+    results: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, list):
+            for el in node:
+                _walk(el)
+            return
+        if not isinstance(node, dict):
+            return
+
+        if "playlistAddToOptionRenderer" in node and isinstance(node["playlistAddToOptionRenderer"], dict):
+            opt = node["playlistAddToOptionRenderer"]
+            pid = opt.get("playlistId") or ""
+            title = extract_yt_text(opt.get("title"))
+            if pid and pid not in seen:
+                seen.add(pid)
+                results.append(
+                    {
+                        "id": pid,
+                        "title": title or pid,
+                        "privacy": str(opt.get("privacy") or ""),
+                        "contains_selected": str(opt.get("containsSelectedVideos") or "") == "ALL",
+                        "count_text": "",
+                        "thumbnail": "",
+                    }
+                )
+
+        if "lockupViewModel" in node and isinstance(node["lockupViewModel"], dict):
+            vm = node["lockupViewModel"]
+            if vm.get("contentType") in ("LOCKUP_CONTENT_TYPE_PLAYLIST", "LOCKUP_CONTENT_TYPE_ALBUM"):
+                pid = vm.get("contentId") or ""
+                title = extract_yt_text((vm.get("metadata") or {}).get("lockupMetadataViewModel", {}).get("title"))
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    results.append({"id": pid, "title": title or pid, "privacy": "", "contains_selected": False, "count_text": "", "thumbnail": ""})
+
+        for pk in ("gridPlaylistRenderer", "playlistRenderer", "compactPlaylistRenderer"):
+            if pk in node and isinstance(node[pk], dict):
+                pr = node[pk]
+                pid = pr.get("playlistId") or ""
+                title = extract_yt_text(pr.get("title"))
+                cnt = extract_yt_text(pr.get("videoCountText") or pr.get("videoCountShortText"))
+                thumbs = (pr.get("thumbnail") or {}).get("thumbnails") or []
+                if not thumbs and pr.get("thumbnails"):
+                    thumbs = (pr["thumbnails"][0] or {}).get("thumbnails") or []
+                turl = thumbs[-1].get("url") if thumbs else ""
+                if pid and pid not in seen:
+                    seen.add(pid)
+                    results.append({"id": pid, "title": title or pid, "privacy": "", "contains_selected": False, "count_text": cnt, "thumbnail": turl})
+
+        for v in node.values():
+            _walk(v)
+
+    _walk(payload)
+    return results
+
+
+async def fetch_video_next_meta(video_id: str) -> Dict[str, Any]:
+    """Fetch comments token, channel avatar, subscriber count, like count, and related videos from WEB /next."""
+    try:
+        data = await innertube_web_post("next", {"videoId": video_id})
+    except Exception:
+        return {}
+
+    raw_s = json.dumps(data, ensure_ascii=False)
+    ch_match = re.search(r'"channelId"\s*:\s*"(UC[A-Za-z0-9_-]{22})"', raw_s)
+    sub_match = re.search(r'"subscriberCountText"\s*:\s*\{\s*"accessibility"\s*:\s*\{\s*"accessibilityData"\s*:\s*\{\s*"label"\s*:\s*"([^"]+)"', raw_s)
+    like_match = (
+        re.search(r'"iconName"\s*:\s*"LIKE"\s*,\s*"title"\s*:\s*"([^"]+)"', raw_s)
+        or re.search(r'"accessibilityText"\s*:\s*"[^"]*?([\d.,]+\s*[NTKMBtr]*)\s*(?:người khác thích|lượt thích|likes?)"', raw_s, re.I)
+    )
+    avatar_match = re.search(r'"videoOwnerRenderer".*?"url"\s*:\s*"(https://yt3\.[^"]+)"', raw_s)
+    cmt_count_match = re.search(r'"commentsHeaderRenderer".*?"countText"\s*:\s*\{[^}]*?"(?:simpleText|text)"\s*:\s*"([^"]+)"', raw_s)
+    cmt_token = ""
+    for p in data.get("engagementPanels", []) or []:
+        ps = json.dumps(p)
+        if "engagement-panel-comments-section" in ps:
+            m = re.search(r'"token"\s*:\s*"([^"]+)"', ps)
+            if m:
+                cmt_token = m.group(1)
+                break
+
+    related = [item for item in extract_videos_from_innertube(data, limit=14) if item["id"] != video_id][:8]
+    return {
+        "channel_id": ch_match.group(1) if ch_match else "",
+        "subscriber_count_text": sub_match.group(1) if sub_match else "",
+        "like_count_text": like_match.group(1).strip() if like_match else "",
+        "channel_avatar": avatar_match.group(1) if avatar_match else "",
+        "comment_count_text": cmt_count_match.group(1) if cmt_count_match else "",
+        "comments_token": cmt_token,
+        "related": related,
+    }
+
+
 async def fetch_innertube_browse_videos(browse_id: str, limit: int = 36) -> List[Dict[str, Any]]:
     """Fetch personalized YouTube feeds (FEhistory / FEsubscriptions) using OAuth2 token."""
     token = await get_valid_oauth_token()
@@ -2040,19 +2337,66 @@ async def api_youtube_subscriptions() -> Dict[str, Any]:
 
 @app.get("/api/trending")
 async def api_trending(category: str = Query("all")) -> Dict[str, Any]:
-    """Return cached or freshly fetched trending videos by category."""
+    """Return personalized YouTube Home feed (when signed in) or trending videos by category."""
     cat = category if category in TRENDING_QUERIES else "all"
+    if cat == "all" and has_oauth_token():
+        cache_key = "yt_home_all"
+        cached = SEARCH_CACHE.get(cache_key)
+        if cached and cached["expires_at"] > time.time():
+            return {"category": cat, "personalized": True, "items": cached["items"]}
+        try:
+            items = await fetch_innertube_browse_videos("FEwhat_to_watch", limit=32)
+            if items:
+                SEARCH_CACHE[cache_key] = {"expires_at": time.time() + 180, "items": items}
+                return {"category": cat, "personalized": True, "items": items}
+        except Exception:
+            pass
+
     cache_key = f"trending:{cat}"
     cached = SEARCH_CACHE.get(cache_key)
     if cached and cached["expires_at"] > time.time():
-        return {"category": cat, "items": cached["items"]}
+        return {"category": cat, "personalized": False, "items": cached["items"]}
 
     items = await asyncio.to_thread(run_flat_search_sync, TRENDING_QUERIES[cat], False)
     SEARCH_CACHE[cache_key] = {
         "expires_at": time.time() + SEARCH_CACHE_TTL,
         "items": items,
     }
-    return {"category": cat, "items": items}
+    return {"category": cat, "personalized": False, "items": items}
+
+
+@app.get("/api/shorts")
+async def api_shorts(q: str = Query("")) -> Dict[str, Any]:
+    """Return clean vertical YouTube Shorts feed."""
+    clean_q = q.strip()
+    queries = [clean_q] if clean_q else ["#shorts", "shorts hài hước việt nam"]
+    cache_key = f"shorts:{clean_q.lower() or '__default__'}"
+    cached = SEARCH_CACHE.get(cache_key)
+    if cached and cached["expires_at"] > time.time():
+        return {"items": cached["items"]}
+    items: List[Dict[str, Any]] = []
+    seen: set = set()
+    for query in queries:
+        try:
+            data = await innertube_web_post("search", {"query": query})
+            batch = extract_shorts_from_innertube(data, limit=30)
+            # Also collect standalone Shorts renderers whose videoRenderer embeds reelWatchEndpoint
+            for extra in extract_videos_from_innertube(data, limit=40):
+                if extra.get("is_short") and extra.get("id"):
+                    batch.append(extra)
+            for it in batch:
+                vid = it.get("id")
+                if vid and vid not in seen:
+                    seen.add(vid)
+                    it["is_short"] = True
+                    items.append(it)
+        except Exception:
+            pass
+        if len(items) >= 24:
+            break
+    items = items[:24]
+    SEARCH_CACHE[cache_key] = {"expires_at": time.time() + 300, "items": items}
+    return {"items": items}
 
 
 @app.get("/api/search")
@@ -2098,21 +2442,91 @@ async def api_suggest(q: str = Query(..., min_length=1)) -> Dict[str, Any]:
     return {"suggestions": []}
 
 
+CHANNEL_TAB_PARAMS = {
+    "videos": "EgZ2aWRlb3PyBgQKAjoA",
+    "shorts": "EgZzaG9ydHPyBgUKA5oBAA%3D%3D",
+    "live": "EgdzdHJlYW1z8gYECgJ6AA%3D%3D",
+    "playlists": "EglwbGF5bGlzdHPyBgoKCEIGCgIQaCIA",
+}
+
+
+@app.post("/api/channel/subscribe")
+async def api_channel_subscribe(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Subscribe or unsubscribe to a real YouTube channel using Google OAuth."""
+    channel_id = str(payload.get("channel_id") or "").strip()
+    subscribe = bool(payload.get("subscribe", True))
+    if not re.fullmatch(r"UC[A-Za-z0-9_-]{22}", channel_id):
+        raise HTTPException(status_code=400, detail="Không xác định được ID kênh (UC...) để đồng bộ YouTube.")
+    ep = "subscription/subscribe" if subscribe else "subscription/unsubscribe"
+    await innertube_tv_post(ep, {"channelIds": [channel_id]})
+    SEARCH_CACHE.pop("yt_subs", None)
+    return {"subscribed": subscribe, "channel_id": channel_id}
+
+
 @app.get("/api/channel/{channel_query}")
-async def api_channel(channel_query: str) -> Dict[str, Any]:
-    """Fetch recent videos for a subscribed channel name."""
+async def api_channel(channel_query: str, tab: str = Query("videos")) -> Dict[str, Any]:
+    """Fetch full channel header + tabbed items (videos/shorts/live/playlists)."""
     decoded = urllib.parse.unquote(channel_query).strip()
-    cache_key = f"channel:{decoded.lower()}"
+    tab_key = tab if tab in CHANNEL_TAB_PARAMS else "videos"
+    cache_key = f"channel_v2:{decoded.lower()}:{tab_key}"
     cached = SEARCH_CACHE.get(cache_key)
     if cached and cached["expires_at"] > time.time():
-        return {"channel": decoded, "items": cached["items"]}
+        return cached["data"]
 
-    items = await asyncio.to_thread(run_flat_search_sync, f"ytsearch14:{decoded}", False)
-    SEARCH_CACHE[cache_key] = {
-        "expires_at": time.time() + SEARCH_CACHE_TTL,
-        "items": items,
+    cid = decoded if re.fullmatch(r"UC[A-Za-z0-9_-]{22}", decoded) else ""
+    if not cid:
+        try:
+            sr = await innertube_web_post("search", {"query": decoded, "params": "EgIQAg%3D%3D"})
+            m_cid = re.search(r'"channelId"\s*:\s*"(UC[A-Za-z0-9_-]{22})"', json.dumps(sr))
+            if m_cid:
+                cid = m_cid.group(1)
+        except Exception:
+            cid = ""
+
+    result: Dict[str, Any] = {
+        "channel": decoded,
+        "channel_id": cid or decoded,
+        "name": decoded,
+        "avatar": "",
+        "banner": "",
+        "subscribers": "",
+        "active_tab": tab_key,
+        "items": [],
     }
-    return {"channel": decoded, "items": items}
+    if cid:
+        try:
+            data = await innertube_web_post("browse", {"browseId": cid, "params": CHANNEL_TAB_PARAMS[tab_key]})
+            raw_s = json.dumps(data, ensure_ascii=False)
+            m_name = (
+                re.search(r'"pageHeaderViewModel"\s*:\s*\{\s*"title".*?"content"\s*:\s*"([^"]+)"', raw_s)
+                or re.search(r'"c4TabbedHeaderRenderer".*?"title"\s*:\s*"([^"]+)"', raw_s)
+            )
+            m_sub = re.search(r'(\d[\d.,]*\s*(?:Tr|N|K|M|B)?\s*người đăng ký|[\d.,]+[KMB]?\s*subscribers?)', raw_s, re.I)
+            m_av = re.search(r'"avatarViewModel".*?"url"\s*:\s*"(https://yt3\.[^"]+)"', raw_s) or re.search(r'"url"\s*:\s*"(https://yt3\.[^"]+)"', raw_s)
+            m_ban = re.search(r'"banner".*?"url"\s*:\s*"(https://yt3\.[^"]+)"', raw_s)
+            if m_name:
+                result["name"] = m_name.group(1)
+            if m_sub:
+                result["subscribers"] = m_sub.group(1)
+            if m_av:
+                result["avatar"] = m_av.group(1)
+            if m_ban:
+                result["banner"] = m_ban.group(1)
+
+            if tab_key == "shorts":
+                result["items"] = extract_shorts_from_innertube(data, limit=30)
+            elif tab_key == "playlists":
+                result["items"] = extract_playlists_from_innertube(data)
+            else:
+                result["items"] = extract_videos_from_innertube(data, limit=30)
+        except Exception:
+            pass
+
+    if not result["items"] and tab_key == "videos":
+        result["items"] = await asyncio.to_thread(run_flat_search_sync, f"ytsearch14:{decoded}", False)
+
+    SEARCH_CACHE[cache_key] = {"expires_at": time.time() + SEARCH_CACHE_TTL, "data": result}
+    return result
 
 
 @app.post("/api/prefetch/{video_id}")
@@ -2199,11 +2613,162 @@ async def api_video_extras(
         except Exception:
             return []
 
-    sponsor_segments, related = await asyncio.gather(
+    sponsor_segments, related, next_meta = await asyncio.gather(
         fetch_sponsorblock(vid),
         _get_related(),
+        fetch_video_next_meta(vid),
     )
-    return {"sponsor_segments": sponsor_segments, "related": related}
+    if not related and next_meta.get("related"):
+        related = next_meta["related"]
+    return {
+        "sponsor_segments": sponsor_segments,
+        "related": related,
+        "channel_id": next_meta.get("channel_id") or cached_video.get("channel_id") or "",
+        "subscriber_count_text": next_meta.get("subscriber_count_text") or "",
+        "like_count_text": next_meta.get("like_count_text") or "",
+        "channel_avatar": next_meta.get("channel_avatar") or "",
+        "comment_count_text": next_meta.get("comment_count_text") or "",
+        "comments_token": next_meta.get("comments_token") or "",
+    }
+
+
+@app.get("/api/comments/{video_id}")
+async def api_comments(video_id: str, continuation: str = Query("")) -> Dict[str, Any]:
+    """Load comments, nested replies, or next comment pages for a YouTube video."""
+    vid = extract_video_id_from_text(video_id)
+    if not vid:
+        raise HTTPException(status_code=400, detail="Video ID không hợp lệ.")
+    tok = continuation.strip()
+    if not tok:
+        meta = await fetch_video_next_meta(vid)
+        tok = meta.get("comments_token") or ""
+    if not tok:
+        return {"comments": [], "next_continuation": ""}
+    data = await innertube_web_post("next", {"continuation": tok})
+    return parse_comments_payload(data)
+
+
+@app.post("/api/video/{video_id}/react")
+async def api_video_react(video_id: str, payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Like, dislike, or clear reaction on a YouTube video using Google OAuth."""
+    vid = extract_video_id_from_text(video_id)
+    if not vid:
+        raise HTTPException(status_code=400, detail="Video ID không hợp lệ.")
+    action = str(payload.get("action") or "like").lower()
+    ep_map = {"like": "like/like", "dislike": "like/dislike", "none": "like/removelike"}
+    ep = ep_map.get(action, "like/like")
+    await innertube_tv_post(ep, {"target": {"videoId": vid}})
+    return {"video_id": vid, "action": action if action in ep_map else "like"}
+
+
+@app.get("/api/playlists/youtube")
+async def api_youtube_playlists(video_id: str = Query("")) -> Dict[str, Any]:
+    """Fetch user's YouTube playlists (Watch Later, Liked, custom) via Google OAuth."""
+    vids = [video_id] if video_id and re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) else ["jNQXAC9IVRw"]
+    data = await innertube_tv_post("playlist/get_add_to_playlist", {"videoIds": vids})
+    playlists = extract_playlists_from_innertube(data)
+    if not any(p["id"] == "LL" for p in playlists):
+        playlists.append({"id": "LL", "title": "Video đã thích", "privacy": "PRIVATE", "contains_selected": False, "count_text": "", "thumbnail": ""})
+    return {"playlists": playlists}
+
+
+@app.get("/api/playlists/youtube/{playlist_id}")
+async def api_youtube_playlist_items(playlist_id: str) -> Dict[str, Any]:
+    """Fetch videos inside a YouTube playlist (e.g. WL, LL, PL...)."""
+    pid = playlist_id.strip()
+    browse_id = pid if pid.startswith("VL") else f"VL{pid}"
+    data = await innertube_tv_post("browse", {"browseId": browse_id})
+    return {"playlist_id": pid, "items": extract_videos_from_innertube(data, limit=50)}
+
+
+@app.post("/api/playlists/youtube/add")
+async def api_youtube_playlist_edit(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Add or remove a video from a real YouTube playlist using Google OAuth."""
+    pid = str(payload.get("playlist_id") or "").strip()
+    vid = extract_video_id_from_text(str(payload.get("video_id") or ""))
+    remove = bool(payload.get("remove", False))
+    if not pid or not vid:
+        raise HTTPException(status_code=400, detail="Thiếu playlist_id hoặc video_id hợp lệ.")
+    act = (
+        {"action": "ACTION_REMOVE_VIDEO_BY_VIDEO_ID", "removedVideoId": vid}
+        if remove
+        else {"action": "ACTION_ADD_VIDEO", "addedVideoId": vid}
+    )
+    await innertube_tv_post("browse/edit_playlist", {"playlistId": pid, "actions": [act]})
+    return {"playlist_id": pid, "video_id": vid, "added": not remove}
+
+
+def _rewrite_m3u8_backend(body: str, base_url: str, vid: str) -> str:
+    """Rewrite relative/absolute URIs in HLS .m3u8 playlists to route through /api/hls-proxy."""
+    def _proxy_ref(ref: str) -> str:
+        abs_url = urllib.parse.urljoin(base_url, ref.strip())
+        return f"/api/hls-proxy?url={urllib.parse.quote(abs_url, safe='')}&vid={urllib.parse.quote(vid, safe='')}"
+
+    out_lines: List[str] = []
+    for raw_line in body.splitlines():
+        line = raw_line.strip("\r")
+        if line.startswith("#"):
+            out_lines.append(re.sub(r'URI="([^"]+)"', lambda m: f'URI="{_proxy_ref(m.group(1))}"', line))
+        elif line.strip():
+            out_lines.append(_proxy_ref(line))
+        else:
+            out_lines.append(line)
+    return "\n".join(out_lines)
+
+
+@app.get("/api/hls/{video_id}")
+async def api_hls_manifest(video_id: str) -> Response:
+    """Serve rewritten YouTube Livestream HLS master manifest with permissive CORS headers."""
+    vid = extract_video_id_from_text(video_id)
+    if not vid:
+        raise HTTPException(status_code=400, detail="Video ID không hợp lệ.")
+    cached = STREAM_CACHE.get(vid)
+    if not cached or not cached.get("hls_manifest_url"):
+        await asyncio.to_thread(extract_video_sync, vid, True)
+        cached = STREAM_CACHE.get(vid)
+    hls_url = (cached or {}).get("hls_manifest_url") or ""
+    if not hls_url:
+        raise HTTPException(status_code=404, detail="Video này không có luồng trực tiếp HLS.")
+    headers = (cached or {}).get("hls_headers") or {"User-Agent": ANDROID_INNERTUBE_UA}
+    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+        resp = await client.get(hls_url, headers=headers)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Lỗi tải luồng HLS ({resp.status_code}).")
+    rewritten = _rewrite_m3u8_backend(resp.text, str(resp.url), vid)
+    return Response(
+        content=rewritten,
+        media_type="application/vnd.apple.mpegurl",
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
+    )
+
+
+@app.get("/api/hls-proxy")
+async def api_hls_proxy(url: str = Query(...), vid: str = Query("")) -> Response:
+    """Proxy HLS sub-playlists and live media segments cleanly with CORS headers."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https") or not (
+        parsed.netloc.endswith(".googlevideo.com") or parsed.netloc.endswith(".youtube.com")
+    ):
+        raise HTTPException(status_code=400, detail="URL HLS không hợp lệ.")
+    cached = STREAM_CACHE.get(vid) if vid else None
+    headers = (cached or {}).get("hls_headers") or {"User-Agent": ANDROID_INNERTUBE_UA}
+    async with httpx.AsyncClient(follow_redirects=True, timeout=15.0) as client:
+        resp = await client.get(url, headers=headers)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Lỗi tải phân đoạn HLS ({resp.status_code}).")
+    ct = resp.headers.get("content-type", "video/mp2t")
+    if ".m3u8" in str(resp.url) or "mpegurl" in ct.lower() or resp.content[:7] == b"#EXTM3U":
+        rewritten = _rewrite_m3u8_backend(resp.text, str(resp.url), vid)
+        return Response(
+            content=rewritten,
+            media_type="application/vnd.apple.mpegurl",
+            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
+        )
+    return Response(
+        content=resp.content,
+        media_type=ct,
+        headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/dubbing/{video_id}")
