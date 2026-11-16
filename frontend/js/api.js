@@ -81,9 +81,10 @@ const PureAPI = {
     return this.fetchJson(`/api/suggest?q=${encodeURIComponent(query)}`);
   },
 
-  getVideo(videoId) {
-    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getVideo(videoId);
-    return this.fetchJson(`/api/video/${encodeURIComponent(videoId)}`);
+  getVideo(videoId, forceRefresh = false) {
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getVideo(videoId, forceRefresh);
+    const qs = forceRefresh ? "?refresh=1" : "";
+    return this.fetchJson(`/api/video/${encodeURIComponent(videoId)}${qs}`);
   },
 
   getVideoExtras(videoId, channel = "", title = "") {

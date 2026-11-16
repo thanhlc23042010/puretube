@@ -151,9 +151,12 @@ const PurePlayer = {
 
       media.addEventListener("playing", () => {
         if (media === this.activeMedia()) {
+          clearTimeout(this._loadWatchdogTimer);
           this.showSpinner(false);
           if (this.isDualStream && !this.isAudioOnly && media === video && audio.paused) {
-            audio.currentTime = video.currentTime;
+            if (audio.readyState >= 1 && Math.abs(audio.currentTime - video.currentTime) > 0.25) {
+              audio.currentTime = video.currentTime;
+            }
             audio.play().catch(() => {});
           }
         }
@@ -161,7 +164,17 @@ const PurePlayer = {
 
       media.addEventListener("canplay", () => {
         if (media === this.activeMedia()) {
+          clearTimeout(this._loadWatchdogTimer);
           this.showSpinner(false);
+        }
+      });
+
+      media.addEventListener("error", () => {
+        if (!this.videoData || !media.getAttribute("src")) return;
+        const isPrimary = media === this.activeMedia();
+        const isDualAudio = this.isDualStream && !this.isAudioOnly && media === audio;
+        if (isPrimary || isDualAudio) {
+          this.handleMediaError(isDualAudio ? "audio" : "video");
         }
       });
 
@@ -400,8 +413,10 @@ const PurePlayer = {
     });
   },
 
-  loadVideo(videoData) {
+  loadVideo(videoData, preserveRecovery = false) {
+    const savedRecoveryStep = preserveRecovery ? (this._recoveryStep || 0) : 0;
     this.stop();
+    this._recoveryStep = savedRecoveryStep;
     this.videoData = videoData;
     this.skippedUuids = new Set();
     this.lastUndoSegment = null;
@@ -636,6 +651,19 @@ const PurePlayer = {
       audio.volume = this.isDubSpeaking ? Math.min(this.volume, 0.2) : this.volume;
       audio.muted = this.isMuted;
       audio.playbackRate = this.playbackRate;
+      audio.addEventListener(
+        "loadedmetadata",
+        () => {
+          if (!this.videoData || !this.isDualStream || this.isAudioOnly) return;
+          if (video.currentTime > 0.1) {
+            audio.currentTime = video.currentTime;
+          }
+          if (!video.paused) {
+            audio.play().catch(() => {});
+          }
+        },
+        { once: true }
+      );
       audio.load();
     } else {
       audio.removeAttribute("src");
@@ -645,16 +673,66 @@ const PurePlayer = {
     }
 
     const onVideoReady = () => {
+      clearTimeout(this._loadWatchdogTimer);
       if (resumeTime > 0) {
         video.currentTime = resumeTime;
-        if (this.isDualStream) audio.currentTime = resumeTime;
+        if (this.isDualStream && audio.readyState >= 1) audio.currentTime = resumeTime;
       }
       if (autoPlay) {
         this.play();
       }
     };
     video.addEventListener("loadedmetadata", onVideoReady, { once: true });
+    clearTimeout(this._loadWatchdogTimer);
+    this._loadWatchdogTimer = setTimeout(() => {
+      if (this.videoData && video.readyState === 0 && !this.isAudioOnly) {
+        this.handleMediaError("timeout");
+      }
+    }, 18000);
     video.load();
+  },
+
+  async handleMediaError(reason = "video") {
+    clearTimeout(this._loadWatchdogTimer);
+    if (!this.videoData) return;
+    const vid = this.videoData.id;
+    const step = this._recoveryStep || 0;
+
+    if (step === 0) {
+      this._recoveryStep = 1;
+      const combined = (this.videoData.qualities || []).find(
+        (q) => q.has_audio && (!this.currentQuality || q.id !== this.currentQuality.id)
+      );
+      if (combined) {
+        this.currentQuality = combined;
+        this.isAudioOnly = false;
+        this.updateQualityUI();
+        this.applyStreamMode(this.getCurrentTime(), true);
+        return;
+      }
+    }
+
+    if (step <= 1) {
+      this._recoveryStep = 2;
+      try {
+        const refreshed = await PureAPI.getVideo(vid, true);
+        if (this.videoData && this.videoData.id === vid && refreshed?.qualities?.length) {
+          const resumeAt = this.getCurrentTime();
+          this.loadVideo(refreshed, true);
+          if (resumeAt > 1) this.seekTo(resumeAt);
+          return;
+        }
+      } catch (_) {}
+    }
+
+    this.showSpinner(false);
+    if (window.showAppToast) {
+      window.showAppToast(
+        reason === "timeout"
+          ? "Kết nối luồng phát quá chậm. Vui lòng thử lại hoặc đổi chất lượng."
+          : "Không thể phát luồng video này. Vui lòng thử chất lượng khác."
+      );
+    }
   },
 
   play() {
@@ -662,7 +740,9 @@ const PurePlayer = {
     if (!media || !media.src) return;
     media.play().catch(() => {});
     if (this.isDualStream && !this.isAudioOnly) {
-      this.els.audio.currentTime = this.els.video.currentTime;
+      if (this.els.audio.readyState >= 1) {
+        this.els.audio.currentTime = this.els.video.currentTime;
+      }
       this.els.audio.play().catch(() => {});
     }
     this.updatePlayIcons();
@@ -684,6 +764,8 @@ const PurePlayer = {
   },
 
   stop() {
+    clearTimeout(this._loadWatchdogTimer);
+    this._recoveryStep = 0;
     this.els.video.pause();
     this.els.audio.pause();
     this.stopDubSpeech();
@@ -725,7 +807,7 @@ const PurePlayer = {
       this.els.audio.currentTime = clamped;
     } else {
       this.els.video.currentTime = clamped;
-      if (this.isDualStream) {
+      if (this.isDualStream && this.els.audio.readyState >= 1) {
         this.els.audio.currentTime = clamped;
       }
     }

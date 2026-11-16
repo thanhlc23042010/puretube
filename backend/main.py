@@ -49,6 +49,7 @@ IS_CLOUD_ENV = bool(
     or os.environ.get("FLY_APP_NAME")
 )
 IOS_INNERTUBE_UA = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X;)"
+ANDROID_INNERTUBE_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip"
 VISITOR_DATA_CACHE: Dict[str, Any] = {"value": "", "expires_at": 0.0}
 
 USER_DOWNLOADS_DIR = Path.home() / "Downloads"
@@ -450,6 +451,7 @@ def select_best_formats(
             "url": url,
             "ext": ext,
             "http_headers": fmt.get("http_headers") or {},
+            "content_length": int(fmt.get("content_length") or fmt.get("filesize") or fmt.get("filesize_approx") or 0),
             "mime_hint": (
                 "audio/mp4"
                 if vcodec == "none" and ext in ("m4a", "mp4")
@@ -638,49 +640,72 @@ def get_visitor_data_sync() -> str:
 
 
 def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
-    """Fast-path InnerTube IOS client extractor (~350ms, inspired by Morphe & YTLite spoofing)."""
+    """Fast-path InnerTube extractor (ANDROID + IOS fallback, inspired by Morphe & YTLite spoofing)."""
     visitor_data = get_visitor_data_sync()
-    client_ctx: Dict[str, Any] = {
-        "clientName": "IOS",
-        "clientVersion": "20.10.4",
-        "deviceMake": "Apple",
-        "deviceModel": "iPhone16,2",
-        "osName": "iPhone",
-        "osVersion": "18.3.1.22D72",
-        "hl": "vi",
-        "gl": "VN",
-    }
-    if visitor_data:
-        client_ctx["visitorData"] = visitor_data
+    candidates = [
+        (
+            {
+                "clientName": "ANDROID",
+                "clientVersion": "20.10.38",
+                "androidSdkVersion": 34,
+                "hl": "vi",
+                "gl": "VN",
+            },
+            ANDROID_INNERTUBE_UA,
+        ),
+        (
+            {
+                "clientName": "IOS",
+                "clientVersion": "20.10.4",
+                "deviceMake": "Apple",
+                "deviceModel": "iPhone16,2",
+                "osName": "iPhone",
+                "osVersion": "18.3.1.22D72",
+                "hl": "vi",
+                "gl": "VN",
+            },
+            IOS_INNERTUBE_UA,
+        ),
+    ]
 
-    headers: Dict[str, str] = {
-        "Content-Type": "application/json",
-        "User-Agent": IOS_INNERTUBE_UA,
-    }
-    if visitor_data:
-        headers["X-Goog-Visitor-Id"] = visitor_data
+    data = None
+    active_ua = ANDROID_INNERTUBE_UA
+    for client_tpl, ua in candidates:
+        client_ctx = dict(client_tpl)
+        if visitor_data:
+            client_ctx["visitorData"] = visitor_data
+        headers: Dict[str, str] = {
+            "Content-Type": "application/json",
+            "User-Agent": ua,
+        }
+        if visitor_data:
+            headers["X-Goog-Visitor-Id"] = visitor_data
+        payload = {
+            "videoId": video_id,
+            "context": {"client": client_ctx},
+            "contentCheckOk": True,
+            "racyCheckOk": True,
+        }
+        try:
+            with httpx.Client(timeout=7.0, follow_redirects=True) as client:
+                resp = client.post(
+                    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+                    headers=headers,
+                    json=payload,
+                )
+            if resp.status_code != 200:
+                continue
+            parsed = resp.json()
+            if (parsed.get("playabilityStatus") or {}).get("status") == "OK":
+                sd = parsed.get("streamingData") or {}
+                if sd.get("formats") or sd.get("adaptiveFormats"):
+                    data = parsed
+                    active_ua = ua
+                    break
+        except Exception:
+            continue
 
-    payload = {
-        "videoId": video_id,
-        "context": {"client": client_ctx},
-        "contentCheckOk": True,
-        "racyCheckOk": True,
-    }
-    try:
-        with httpx.Client(timeout=7.0, follow_redirects=True) as client:
-            resp = client.post(
-                "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-                headers=headers,
-                json=payload,
-            )
-        if resp.status_code != 200:
-            return None
-        data = resp.json()
-    except Exception:
-        return None
-
-    status = (data.get("playabilityStatus") or {}).get("status")
-    if status != "OK":
+    if not data:
         return None
 
     streaming = data.get("streamingData") or {}
@@ -689,7 +714,7 @@ def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
         *((f, True) for f in (streaming.get("adaptiveFormats") or [])),
     ]
     ytdlp_like_formats: List[Dict[str, Any]] = []
-    req_headers = {"User-Agent": IOS_INNERTUBE_UA}
+    req_headers = {"User-Agent": active_ua}
 
     for fmt, is_adaptive in raw_entries:
         stream_url = fmt.get("url")
@@ -738,6 +763,7 @@ def extract_via_ios_innertube_sync(video_id: str) -> Optional[Dict[str, Any]]:
                 "abr": bitrate_kbps if is_audio_only else 0,
                 "language": lang,
                 "format_note": fmt_note,
+                "content_length": int(fmt.get("contentLength") or 0),
                 "http_headers": req_headers,
             }
         )
@@ -2117,14 +2143,14 @@ async def api_prefetch(video_id: str) -> Dict[str, Any]:
 
 
 @app.get("/api/video/{video_id}")
-async def api_video(video_id: str) -> Dict[str, Any]:
+async def api_video(video_id: str, refresh: bool = Query(False)) -> Dict[str, Any]:
     """Return streamable video/audio formats fast (using cache when prefetched)."""
     vid = extract_video_id_from_text(video_id)
     if not vid:
         raise HTTPException(status_code=400, detail="Video ID không hợp lệ.")
 
     try:
-        video_data = await asyncio.to_thread(extract_video_sync, vid)
+        video_data = await asyncio.to_thread(extract_video_sync, vid, refresh)
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -2316,13 +2342,31 @@ async def api_tts(
     )
 
 
+def _parse_range_bounds(range_header: Optional[str], total: int) -> Tuple[bool, int, int]:
+    """Parse HTTP Range bytes=start-end against total length cleanly."""
+    if not range_header:
+        return False, 0, total - 1
+    m = re.match(r"bytes=(\d*)-(\d*)", range_header.strip(), re.I)
+    if not m:
+        return False, 0, total - 1
+    s_part, e_part = m.group(1), m.group(2)
+    if s_part:
+        start = int(s_part)
+        end = min(int(e_part), total - 1) if e_part else (total - 1)
+        return True, start, end
+    if e_part:
+        suffix = int(e_part)
+        return True, max(0, total - suffix), total - 1
+    return False, 0, total - 1
+
+
 @app.get("/api/stream/{video_id}")
 async def api_stream(
     video_id: str,
     request: Request,
     format_id: str = Query(...),
 ) -> StreamingResponse:
-    """Proxy media stream with HTTP 206 Partial Content Range support for iOS Safari & Android."""
+    """Proxy media stream with HTTP 206 Partial Content & bounded-chunk fallback for adaptive streams."""
     cached = STREAM_CACHE.get(video_id)
     if not cached or cached["expires_at"] <= time.time():
         await asyncio.to_thread(extract_video_sync, video_id)
@@ -2338,23 +2382,118 @@ async def api_stream(
         raise HTTPException(status_code=404, detail="Không tìm thấy định dạng phát phù hợp.")
 
     target_url = fmt_info["url"]
-    upstream_headers = dict(fmt_info.get("http_headers") or {})
+    upstream_headers = {
+        k: v for k, v in (fmt_info.get("http_headers") or {}).items()
+        if k.lower() != "range"
+    }
     range_header = request.headers.get("range")
+    req_headers = dict(upstream_headers)
     if range_header:
-        upstream_headers["Range"] = range_header
+        req_headers["Range"] = range_header
 
     client = httpx.AsyncClient(
         follow_redirects=True,
         timeout=httpx.Timeout(25.0, read=None),
     )
     try:
-        req = client.build_request("GET", target_url, headers=upstream_headers)
+        req = client.build_request("GET", target_url, headers=req_headers)
         upstream_resp = await client.send(req, stream=True)
     except Exception as exc:
         await client.aclose()
         raise HTTPException(status_code=502, detail=f"Lỗi kết nối luồng phát: {exc}") from exc
 
-    if upstream_resp.status_code in (403, 410):
+    # Direct open-ended Range (bytes=0-) gets 403 on YouTube adaptive CDN; switch to bounded multi-chunk relay
+    if upstream_resp.status_code == 403:
+        await upstream_resp.aclose()
+        total = int(fmt_info.get("content_length") or 0)
+        probe_headers = dict(upstream_headers)
+        probe_headers["Range"] = "bytes=0-65535"
+        try:
+            probe_resp = await client.get(target_url, headers=probe_headers)
+            if probe_resp.status_code in (403, 410):
+                await asyncio.to_thread(extract_video_sync, video_id, True)
+                cached = STREAM_CACHE.get(video_id)
+                fmt_info = (cached or {}).get("format_map", {}).get(format_id)
+                if fmt_info:
+                    target_url = fmt_info["url"]
+                    upstream_headers = {
+                        k: v for k, v in (fmt_info.get("http_headers") or {}).items()
+                        if k.lower() != "range"
+                    }
+                    probe_resp = await client.get(target_url, headers={**upstream_headers, "Range": "bytes=0-65535"})
+            if total <= 0 and probe_resp.status_code in (200, 206):
+                cr = probe_resp.headers.get("content-range") or ""
+                cm = re.search(r"/(\d+)$", cr.strip())
+                if cm:
+                    total = int(cm.group(1))
+                elif probe_resp.headers.get("content-length"):
+                    total = int(probe_resp.headers["content-length"])
+                if fmt_info and total > 0:
+                    fmt_info["content_length"] = total
+        except Exception as exc:
+            await client.aclose()
+            raise HTTPException(status_code=502, detail=f"Lỗi kết nối luồng phát: {exc}") from exc
+
+        if total <= 0:
+            await client.aclose()
+            raise HTTPException(status_code=502, detail="Không xác định được dung lượng luồng phát.")
+
+        has_range, req_start, req_end = _parse_range_bounds(range_header, total)
+        if req_start < 0 or req_start >= total or req_end < req_start:
+            await client.aclose()
+            raise HTTPException(status_code=416, detail="Range Not Satisfiable")
+
+        chunk_headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Type": fmt_info.get("mime_hint", "video/mp4") if fmt_info else "video/mp4",
+            "Content-Length": str(req_end - req_start + 1),
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges",
+        }
+        if has_range:
+            chunk_headers["Content-Range"] = f"bytes {req_start}-{req_end}/{total}"
+
+        async def chunked_generator():
+            chunk_span = 262144 if total < 35_000_000 else 524288
+            cursor = req_start
+            try:
+                while cursor <= req_end:
+                    sub_end = min(cursor + chunk_span - 1, req_end)
+                    hdrs = dict(upstream_headers)
+                    hdrs["Range"] = f"bytes={cursor}-{sub_end}"
+                    creq = client.build_request("GET", target_url, headers=hdrs)
+                    cresp = await client.send(creq, stream=True)
+                    if cresp.status_code == 403 and chunk_span > 65536:
+                        await cresp.aclose()
+                        chunk_span //= 2
+                        continue
+                    if cresp.status_code not in (200, 206):
+                        await cresp.aclose()
+                        break
+                    got = 0
+                    try:
+                        async for piece in cresp.aiter_bytes(chunk_size=32768):
+                            got += len(piece)
+                            yield piece
+                    finally:
+                        await cresp.aclose()
+                    if got <= 0:
+                        break
+                    cursor += got
+            except (httpx.HTTPError, asyncio.CancelledError):
+                pass
+            finally:
+                await client.aclose()
+
+        return StreamingResponse(
+            chunked_generator(),
+            status_code=206 if has_range else 200,
+            headers=chunk_headers,
+            media_type=chunk_headers["Content-Type"],
+        )
+
+    if upstream_resp.status_code == 410:
         await upstream_resp.aclose()
         await asyncio.to_thread(extract_video_sync, video_id, True)
         cached = STREAM_CACHE.get(video_id)
@@ -2363,11 +2502,14 @@ async def api_stream(
             await client.aclose()
             raise HTTPException(status_code=404, detail="Luồng phát đã hết hạn.")
         target_url = fmt_info["url"]
-        upstream_headers = dict(fmt_info.get("http_headers") or {})
+        req_headers = {
+            k: v for k, v in (fmt_info.get("http_headers") or {}).items()
+            if k.lower() != "range"
+        }
         if range_header:
-            upstream_headers["Range"] = range_header
+            req_headers["Range"] = range_header
         try:
-            req = client.build_request("GET", target_url, headers=upstream_headers)
+            req = client.build_request("GET", target_url, headers=req_headers)
             upstream_resp = await client.send(req, stream=True)
         except Exception as exc:
             await client.aclose()

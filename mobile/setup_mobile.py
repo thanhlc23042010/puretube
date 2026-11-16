@@ -41,6 +41,7 @@ def patch_android() -> None:
             "        if (this.bridge != null && this.bridge.getWebView() != null) {\n"
             "            WebSettings settings = this.bridge.getWebView().getSettings();\n"
             "            settings.setMediaPlaybackRequiresUserGesture(false);\n"
+            "            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);\n"
             "        }\n"
             "    }\n"
             "}\n"

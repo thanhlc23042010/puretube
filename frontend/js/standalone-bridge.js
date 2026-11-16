@@ -9,6 +9,7 @@
   const YT_TV_CLIENT_ID = "861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com";
   const YT_TV_CLIENT_SECRET = "SboVhoG9s0rNafixCSGGKXAT";
   const IOS_UA = "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_1 like Mac OS X;)";
+  const AND_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip";
   const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36";
 
   const TRENDING_QUERIES = {
@@ -349,6 +350,8 @@
       const height = fmt.height || 0;
       const fps = fmt.fps || 30;
       const tbr = (fmt.bitrate || 0) / 1000;
+      const contentLen = Number(fmt.contentLength || 0) || 0;
+      const cleanMime = mimeBase || (isAudioOnly ? "audio/mp4" : "video/mp4");
 
       if (!isAudioOnly && acodec !== "none" && height >= 144) {
         const score = (ext === "mp4" ? 1000 : 0) + (vcodec.startsWith("avc1") ? 500 : 0) + tbr;
@@ -362,6 +365,8 @@
             ext,
             vcodec,
             stream_url: streamUrl,
+            _mime: cleanMime,
+            _len: contentLen,
             _score: score,
           });
         }
@@ -382,6 +387,8 @@
             ext,
             vcodec,
             stream_url: streamUrl,
+            _mime: cleanMime,
+            _len: contentLen,
             _score: score,
           });
         }
@@ -409,6 +416,8 @@
             is_original: isOrig,
             ext,
             stream_url: streamUrl,
+            _mime: cleanMime,
+            _len: contentLen,
             _score: score,
           });
         }
@@ -422,7 +431,9 @@
       const rank = (x) => (x.is_vi ? 0 : x.is_original ? 1 : 2);
       return rank(a) - rank(b) || b._score - a._score;
     });
-    audioTracks.forEach((t) => delete t._score);
+        audioTracks.forEach((t) => {
+          delete t._score;
+        });
 
     const viAudio = audioTracks.find((t) => t.is_vi) || null;
     const origAudio = audioTracks.find((t) => t.is_original) || null;
@@ -459,6 +470,8 @@
           has_audio: chosen.has_audio,
           ext: chosen.ext,
           stream_url: chosen.stream_url,
+          _mime: chosen._mime,
+          _len: chosen._len,
         });
       }
     }
@@ -693,6 +706,110 @@
     return results;
   }
 
+  async function requestPlayerClient(vid, visitorData, clientConfig, ua) {
+    const res = await nativeHttpPostJson(
+      "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+      {
+        videoId: vid,
+        context: {
+          client: {
+            ...clientConfig,
+            hl: "vi",
+            gl: "VN",
+            ...(visitorData ? { visitorData } : {}),
+          },
+        },
+        contentCheckOk: true,
+        racyCheckOk: true,
+      },
+      {
+        "User-Agent": ua,
+        ...(visitorData ? { "X-Goog-Visitor-Id": visitorData } : {}),
+      }
+    );
+    if (res.status !== 200) {
+      throw new Error(`Không thể tải luồng phát (${res.status})`);
+    }
+    const data = JSON.parse(res.body);
+    const status = data?.playabilityStatus?.status;
+    if (status !== "OK") {
+      throw new Error(data?.playabilityStatus?.reason || "Video không khả dụng để phát.");
+    }
+    return { data, ua };
+  }
+
+  async function fetchPlayerWithFallback(vid, visitorData) {
+    const clients = [
+      {
+        client: {
+          clientName: "ANDROID",
+          clientVersion: "20.10.38",
+          androidSdkVersion: 34,
+        },
+        ua: AND_UA,
+      },
+      {
+        client: {
+          clientName: "IOS",
+          clientVersion: "20.10.4",
+          deviceMake: "Apple",
+          deviceModel: "iPhone16,2",
+          osName: "iPhone",
+          osVersion: "18.3.1.22D72",
+        },
+        ua: IOS_UA,
+      },
+    ];
+
+    let lastErr = null;
+    for (const candidate of clients) {
+      try {
+        const result = await requestPlayerClient(vid, visitorData, candidate.client, candidate.ua);
+        const sd = result.data?.streamingData || {};
+        const hasStreams = (sd.formats || []).length > 0 || (sd.adaptiveFormats || []).length > 0;
+        if (hasStreams) return result;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
+    throw lastErr || new Error("Không thể tải luồng phát từ YouTube.");
+  }
+
+  async function wrapStreamsWithNativeProxy(classified, ua) {
+    const p = plugin();
+    const canProxy = Boolean(p && typeof p.registerStream === "function");
+    const urlMap = new Map();
+
+    const registerItem = async (item) => {
+      if (!item || !item.stream_url) return;
+      const rawUrl = item.stream_url;
+      if (canProxy) {
+        let proxyPromise = urlMap.get(rawUrl);
+        if (!proxyPromise) {
+          proxyPromise = p
+            .registerStream({
+              url: rawUrl,
+              headers: { "User-Agent": ua },
+              contentLength: item._len || 0,
+              mimeType: item._mime || "video/mp4",
+            })
+            .then((r) => r?.proxyUrl || rawUrl)
+            .catch(() => rawUrl);
+          urlMap.set(rawUrl, proxyPromise);
+        }
+        item.stream_url = await proxyPromise;
+      }
+      delete item._mime;
+      delete item._len;
+    };
+
+    await Promise.all([
+      ...(classified.qualities || []).map(registerItem),
+      ...(classified.audio_tracks || []).map(registerItem),
+    ]);
+    classified.audio_stream_url = classified.default_audio_track ? classified.default_audio_track.stream_url : null;
+  }
+
   const PureStandaloneBridge = {
     isAvailable,
 
@@ -736,51 +853,22 @@
       return { channel: channelName, items: await searchInnerTube(channelName, 14) };
     },
 
-    async getVideo(videoId) {
+    async getVideo(videoId, forceRefresh = false) {
       const vid = extractVideoIdFromText(videoId);
       if (!vid) throw new Error("Video ID không hợp lệ.");
 
-      const cached = videoCache.get(vid);
-      if (cached && cached.expiresAt > Date.now()) {
-        syncWatchHistory(vid);
-        return cached.data;
+      if (!forceRefresh) {
+        const cached = videoCache.get(vid);
+        if (cached && cached.expiresAt > Date.now()) {
+          syncWatchHistory(vid);
+          return cached.data;
+        }
       }
 
       const visitorData = await getVisitorData();
-      const res = await nativeHttpPostJson(
-        "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-        {
-          videoId: vid,
-          context: {
-            client: {
-              clientName: "IOS",
-              clientVersion: "20.10.4",
-              deviceMake: "Apple",
-              deviceModel: "iPhone16,2",
-              osName: "iPhone",
-              osVersion: "18.3.1.22D72",
-              hl: "vi",
-              gl: "VN",
-              ...(visitorData ? { visitorData } : {}),
-            },
-          },
-          contentCheckOk: true,
-          racyCheckOk: true,
-        },
-        {
-          "User-Agent": IOS_UA,
-          ...(visitorData ? { "X-Goog-Visitor-Id": visitorData } : {}),
-        }
-      );
-
-      if (res.status !== 200) throw new Error(`Không thể tải luồng phát (${res.status})`);
-      const data = JSON.parse(res.body);
-      const status = data?.playabilityStatus?.status;
-      if (status !== "OK") {
-        throw new Error(data?.playabilityStatus?.reason || "Video không khả dụng để phát.");
-      }
-
+      const { data, ua } = await fetchPlayerWithFallback(vid, visitorData);
       const classified = classifyStreams(data.streamingData || {});
+      await wrapStreamsWithNativeProxy(classified, ua);
       const details = data.videoDetails || {};
       const dur = parseInt(details.lengthSeconds || "0", 10) || 0;
       const views = parseInt(details.viewCount || "0", 10) || 0;
