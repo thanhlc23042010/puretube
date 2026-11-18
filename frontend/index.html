@@ -139,29 +139,46 @@
         <!-- HOME / DISCOVER VIEW -->
         <section id="view-home" class="page-view active">
           <div class="category-strip" id="category-strip" role="tablist" aria-label="Danh mục video">
-            <button class="chip active" data-category="all">Thịnh hành</button>
+            <button class="chip active" data-category="all">Đề xuất & Thịnh hành</button>
             <button class="chip" data-category="music">Âm nhạc</button>
             <button class="chip" data-category="gaming">Trò chơi</button>
             <button class="chip" data-category="tech">Công nghệ</button>
+            <button class="chip" data-category="entertainment">Giải trí & Vlog</button>
+            <button class="chip" data-category="knowledge">Khoa học & Kiến thức</button>
             <button class="chip" data-category="chill">Chill & Học tập</button>
           </div>
           <div class="section-header" id="home-section-header">
             <h1 class="section-title" id="home-title">Video thịnh hành sạch quảng cáo</h1>
-            <button class="btn-subtle hidden" id="clear-search-results-btn">Quay lại thịnh hành</button>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <button type="button" class="btn-subtle btn-sm" id="home-refresh-btn" title="Làm mới danh sách đề xuất">Làm mới</button>
+              <button class="btn-subtle hidden" id="clear-search-results-btn">Quay lại trang chủ</button>
+            </div>
           </div>
           <div class="video-grid" id="home-video-grid"></div>
+          <div class="feed-load-more-wrap hidden" id="home-load-more-wrap">
+            <button type="button" class="btn-subtle" id="home-load-more-btn">Tải thêm video</button>
+          </div>
         </section>
 
         <!-- SHORTS VIEW -->
         <section id="view-shorts" class="page-view shorts-view">
+          <div class="shorts-topic-strip" id="shorts-topic-strip" role="tablist" aria-label="Chủ đề Shorts">
+            <button type="button" class="chip active" data-shorts-q="">Ngẫu nhiên</button>
+            <button type="button" class="chip" data-shorts-q="shorts hài hước việt nam">Hài hước</button>
+            <button type="button" class="chip" data-shorts-q="shorts âm nhạc remix">Âm nhạc</button>
+            <button type="button" class="chip" data-shorts-q="shorts công nghệ review">Công nghệ</button>
+            <button type="button" class="chip" data-shorts-q="shorts ẩm thực món ngon">Ẩm thực</button>
+            <button type="button" class="chip" data-shorts-q="shorts thể thao bóng đá">Thể thao</button>
+          </div>
           <div class="shorts-shell">
             <div class="shorts-stage" id="shorts-stage">
-              <video id="shorts-video" playsinline webkit-playsinline loop preload="auto"></video>
+              <video id="shorts-video" playsinline webkit-playsinline preload="auto"></video>
               <div class="player-spinner hidden" id="shorts-spinner" aria-label="Đang tải Shorts">
                 <div class="spinner-ring"></div>
               </div>
               <div class="shorts-top-actions">
                 <button type="button" class="ctrl-pill" id="shorts-mute-btn">Âm thanh</button>
+                <button type="button" class="ctrl-pill" id="shorts-refresh-btn" title="Tải loạt Shorts mới không trùng">Đổi loạt mới</button>
                 <button type="button" class="ctrl-pill" id="shorts-open-full-btn">Mở trình phát lớn</button>
               </div>
               <div class="shorts-side-rail">

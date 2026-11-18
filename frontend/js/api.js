@@ -66,9 +66,14 @@ const PureAPI = {
     }));
   },
 
-  getTrending(category = "all") {
-    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getTrending(category);
-    return this.fetchJson(`/api/trending?category=${encodeURIComponent(category)}`);
+  getTrending(category = "all", continuation = "", refresh = false) {
+    if (this.isNativeStandalone()) {
+      return window.PureStandaloneBridge.getTrending(category, continuation, refresh);
+    }
+    const qs = new URLSearchParams({ category });
+    if (continuation) qs.set("continuation", continuation);
+    if (refresh) qs.set("refresh", "1");
+    return this.fetchJson(`/api/trending?${qs.toString()}`);
   },
 
   search(query, limit = 18) {
@@ -124,9 +129,25 @@ const PureAPI = {
     return this.fetchJson(`/api/channel/${encodeURIComponent(channelName)}?tab=${encodeURIComponent(tab)}`);
   },
 
-  getShorts(q = "") {
-    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getShorts(q);
-    return this.fetchJson(`/api/shorts?q=${encodeURIComponent(q)}`);
+  getShorts(q = "", excludeIds = [], seed = 0) {
+    const excludeCsv = Array.isArray(excludeIds) ? excludeIds.filter(Boolean).slice(-120).join(",") : String(excludeIds || "");
+    if (this.isNativeStandalone()) return window.PureStandaloneBridge.getShorts(q, excludeCsv, seed);
+    const qs = new URLSearchParams({ q });
+    if (excludeCsv) qs.set("exclude", excludeCsv);
+    if (seed) qs.set("seed", String(seed));
+    return this.fetchJson(`/api/shorts?${qs.toString()}`);
+  },
+
+  reportWatchProgress(videoId, positionSec = 0, durationSec = 0) {
+    if (!videoId) return Promise.resolve({ synced: false });
+    if (this.isNativeStandalone()) {
+      return window.PureStandaloneBridge.reportWatchProgress(videoId, positionSec, durationSec).catch(() => ({ synced: false }));
+    }
+    return this.fetchJson("/api/youtube/watchtime", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ video_id: videoId, position_sec: positionSec, duration_sec: durationSec }),
+    }).catch(() => ({ synced: false }));
   },
 
   subscribeChannel(channelId, subscribe = true) {

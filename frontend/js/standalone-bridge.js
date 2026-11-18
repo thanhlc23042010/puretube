@@ -13,6 +13,7 @@
   const AND_UA = "com.google.android.youtube/20.10.38 (Linux; U; Android 14) gzip";
   const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36";
   const TV_UA = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version";
+  const TV_DOWNGRADED_UA = "Mozilla/5.0 (DirectFB; Linux x86_64) Cobalt/4.13031-qa (unlike Gecko) Starboard/1";
   const CHANNEL_TAB_PARAMS = {
     videos: "EgZ2aWRlb3PyBgQKAjoA",
     shorts: "EgZzaG9ydHPyBgUKA5oBAA%3D%3D",
@@ -20,13 +21,67 @@
     playlists: "EglwbGF5bGlzdHPyBgoKCEIGCgIQaCIA",
   };
 
-  const TRENDING_QUERIES = {
-    all: "nhạc trẻ việt nam thịnh hành mới nhất 2026",
-    music: "MV ca nhạc mới nhất Vpop Chill",
-    gaming: "review game mới nhất highlights tiếng việt",
-    tech: "đánh giá công nghệ smartphone AI mới nhất tiếng việt",
-    chill: "nhạc lofi chill không lời học bài làm việc",
+  const TRENDING_POOLS = {
+    all: [
+      "video thịnh hành việt nam hôm nay mới nhất",
+      "vlog ẩm thực du lịch khám phá việt nam mới",
+      "MV ca nhạc Vpop remix hot nhất tuần",
+      "review phim hay kiến thức khoa học thú vị",
+      "highlights bóng đá thể thao hôm nay mới",
+      "review công nghệ smartphone AI mới nhất",
+    ],
+    music: [
+      "MV ca nhạc Vpop mới nhất 2026",
+      "nhạc remix edm tiktok việt nam hay nhất",
+      "live session acoustic ballad việt nam",
+      "top hit nhạc quốc tế US UK mới hay",
+    ],
+    gaming: [
+      "review game pc mobile mới nhất tiếng việt",
+      "minecraft sinh tồn việt nam mới nhất",
+      "liên quân tốc chiến valorant highlights việt nam",
+      "game kinh dị phiêu lưu mới việt hóa",
+    ],
+    tech: [
+      "đánh giá smartphone flagship mới nhất tiếng việt",
+      "review laptop AI đồ họa công nghệ mới",
+      "tin tức công nghệ AI lập trình mới nhất",
+      "mẹo hay thủ thuật điện thoại máy tính",
+    ],
+    chill: [
+      "nhạc lofi chill học bài làm việc không lời",
+      "nhạc piano thư giãn nhẹ nhàng dễ ngủ",
+      "acoustic guitar cafe sáng thư giãn",
+      "tiếng mưa rừng tự nhiên thư giãn tập trung",
+    ],
+    entertainment: [
+      "vlog giải trí hài hước việt nam mới nhất",
+      "ẩm thực đường phố review món ngon việt nam",
+      "podcast trò chuyện truyền cảm hứng hay",
+      "thử thách du lịch khám phá đó đây",
+    ],
+    knowledge: [
+      "khám phá khoa học vũ trụ bí ẩn thuyết minh",
+      "tóm tắt lịch sử thế giới việt nam hay nhất",
+      "tài chính cá nhân kỹ năng phát triển bản thân",
+      "phim tài liệu thiên nhiên động vật hoang dã",
+    ],
   };
+
+  const SHORTS_TOPIC_POOL = [
+    "#shorts việt nam",
+    "shorts hài hước việt nam mới",
+    "shorts mới nhất hôm nay",
+    "tiktok việt nam hot shorts",
+    "shorts công nghệ review nhanh",
+    "shorts ẩm thực món ngon nấu ăn",
+    "shorts âm nhạc remix hay nhất",
+    "shorts bóng đá thể thao kỹ thuật",
+    "shorts thú cưng chó mèo hài hước",
+    "shorts kiến thức thú vị khoa học",
+    "shorts du lịch cảnh đẹp thế giới",
+    "shorts game minecraft roblox hay",
+  ];
 
   const SPONSOR_META = {
     sponsor: { label: "Quảng cáo tài trợ", color: "#10B981" },
@@ -57,6 +112,8 @@
   };
 
   let visitorCache = { value: "", expiresAt: 0 };
+  let stsCache = { value: 20772, expiresAt: 0 };
+  const watchTrackCache = new Map();
   const videoCache = new Map();
   const captionsCache = new Map();
   const searchCache = new Map();
@@ -597,80 +654,262 @@
     return "Tài khoản Google (YouTube)";
   }
 
-  async function syncWatchHistory(videoId, playbackData = null) {
-    const token = await getValidAccessToken();
-    if (!token) return;
+  async function getSignatureTimestamp() {
+    const now = Date.now();
+    if (stsCache.value && now < stsCache.expiresAt) return stsCache.value;
     try {
-      const headers = {
-        Authorization: `Bearer ${token}`,
-        "User-Agent": TV_UA,
-        Origin: "https://www.youtube.com",
-      };
-      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-      let cpn = "";
-      for (let i = 0; i < 16; i += 1) cpn += chars[Math.floor(Math.random() * chars.length)];
-
-      let pt = playbackData?.playbackTracking || null;
-      let len = playbackData?.videoDetails?.lengthSeconds || "60";
-      if (!pt?.videostatsPlaybackUrl?.baseUrl) {
-        const res = await nativeHttpPostJson(
-          "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-          {
-            context: { client: { clientName: "TVHTML5", clientVersion: "7.20250312.16.00", hl: "vi", gl: "VN" } },
-            videoId,
-            cpn,
-          },
-          headers
-        );
-        if (res.status === 200) {
-          const pdata = JSON.parse(res.body);
-          pt = pdata?.playbackTracking || null;
-          len = pdata?.videoDetails?.lengthSeconds || len;
+      const res = await nativeHttpGet("https://www.youtube.com/embed/jNQXAC9IVRw", { "User-Agent": WEB_UA });
+      if (res.status === 200 && res.body) {
+        const m = res.body.match(/"sts"\s*:\s*(\d{4,6})/);
+        if (m) {
+          stsCache = { value: parseInt(m[1], 10), expiresAt: now + 12 * 3600 * 1000 };
+          return stsCache.value;
         }
       }
-      let pbUrl = pt?.videostatsPlaybackUrl?.baseUrl;
-      if (!pbUrl) return;
-      if (!pbUrl.startsWith("http")) pbUrl = `https://www.youtube.com${pbUrl}`;
-      const sep1 = pbUrl.includes("?") ? "&" : "?";
-      await nativeHttpGet(`${pbUrl}${sep1}cpn=${cpn}&ver=2&cmt=0&len=${len}&el=leanback&ns=yt`, headers);
-
-      let wtUrl = pt?.videostatsWatchtimeUrl?.baseUrl;
-      if (wtUrl) {
-        if (!wtUrl.startsWith("http")) wtUrl = `https://www.youtube.com${wtUrl}`;
-        const sep2 = wtUrl.includes("?") ? "&" : "?";
-        await nativeHttpGet(
-          `${wtUrl}${sep2}cpn=${cpn}&ver=2&cmt=10.0&st=0.0&et=10.0&rt=10.2&len=${len}&state=playing&el=leanback&ns=yt&final=1`,
-          headers
-        );
-      }
     } catch (_) {}
+    return stsCache.value || 20772;
   }
 
-  async function fetchInnerTubeBrowse(browseId, limit = 36, allowShort = false) {
+  function interleaveBatches(batches, limit = 48) {
+    const out = [];
+    const seen = new Set();
+    const maxLen = Math.max(0, ...batches.map((b) => (b ? b.length : 0)));
+    for (let i = 0; i < maxLen && out.length < limit; i += 1) {
+      for (const batch of batches) {
+        const item = batch?.[i];
+        if (item?.id && !seen.has(item.id)) {
+          seen.add(item.id);
+          out.push(item);
+          if (out.length >= limit) break;
+        }
+      }
+    }
+    return out;
+  }
+
+  function extractBrowseContinuations(payload, limit = 6) {
+    const tokens = [];
+    const seen = new Set();
+    const walk = (node) => {
+      if (tokens.length >= limit || !node || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const el of node) walk(el);
+        return;
+      }
+      const tok =
+        node.nextContinuationData?.continuation ||
+        node.continuationEndpoint?.continuationCommand?.token ||
+        node.continuationCommand?.token ||
+        "";
+      if (typeof tok === "string" && tok.length > 12 && !seen.has(tok)) {
+        seen.add(tok);
+        tokens.push(tok);
+      }
+      for (const v of Object.values(node)) {
+        if (v && typeof v === "object") walk(v);
+      }
+    };
+    walk(payload);
+    return tokens;
+  }
+
+  async function ensureWatchTrackingSession(videoId) {
+    const cached = watchTrackCache.get(videoId);
+    if (cached && cached.expiresAt > Date.now()) return cached;
+
+    let token = await getValidAccessToken();
+    if (!token) return null;
+    const [vd, sts] = await Promise.all([getVisitorData(), getSignatureTimestamp()]);
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let cpn = "";
+    for (let i = 0; i < 16; i += 1) cpn += chars[Math.floor(Math.random() * chars.length)];
+
+    const sendPlayer = (tok) =>
+      nativeHttpPostJson(
+        "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+        {
+          context: {
+            client: {
+              clientName: "TVHTML5",
+              clientVersion: "5.20260901",
+              clientScreen: "WATCH",
+              userAgent: TV_DOWNGRADED_UA,
+              hl: "vi",
+              gl: "VN",
+              ...(vd ? { visitorData: vd } : {}),
+            },
+            user: { enableSafetyMode: false, lockedSafetyMode: false },
+          },
+          playbackContext: {
+            contentPlaybackContext: {
+              html5Preference: "HTML5_PREF_WANTS",
+              lactMilliseconds: 60000,
+              isInlinePlaybackNoAd: true,
+              signatureTimestamp: sts,
+            },
+            devicePlaybackCapabilities: { supportsVp9Encoding: true, supportXhr: false },
+          },
+          racyCheckOk: true,
+          contentCheckOk: true,
+          videoId,
+          cpn,
+        },
+        {
+          Authorization: `Bearer ${tok}`,
+          "User-Agent": TV_DOWNGRADED_UA,
+          "X-YouTube-Client-Name": "7",
+          "X-YouTube-Client-Version": "5.20260901",
+          ...(vd ? { "X-Goog-Visitor-Id": vd } : {}),
+        }
+      );
+
+    let res = await sendPlayer(token);
+    if (res.status === 401) {
+      token = await getValidAccessToken(true);
+      if (!token) return null;
+      res = await sendPlayer(token);
+    }
+    if (res.status !== 200) return null;
+
+    const pdata = JSON.parse(res.body || "{}");
+    const pbBase = pdata?.playbackTracking?.videostatsPlaybackUrl?.baseUrl || "";
+    if (!pbBase) return null;
+    const qIdx = pbBase.indexOf("?");
+    const qs = new URLSearchParams(qIdx >= 0 ? pbBase.slice(qIdx + 1) : "");
+    const session = {
+      videoId,
+      cpn,
+      ei: qs.get("ei") || "",
+      vm: qs.get("vm") || "",
+      of: qs.get("of") || "",
+      len: String(pdata?.videoDetails?.lengthSeconds || qs.get("len") || "60"),
+      lastPosSec: 0,
+      pbSent: false,
+      expiresAt: Date.now() + 30 * 60 * 1000,
+    };
+    if (!session.ei || !session.of) return null;
+    watchTrackCache.set(videoId, session);
+    return session;
+  }
+
+  async function reportWatchProgressInternal(videoId, positionSec = 5, lengthSec = 0) {
+    let token = await getValidAccessToken();
+    if (!token || !videoId) return { synced: false };
+    try {
+      const sess = await ensureWatchTrackingSession(videoId);
+      if (!sess) return { synced: false };
+      if (lengthSec > 0 && (!sess.len || sess.len === "60")) sess.len = String(Math.round(lengthSec));
+      const pos = Math.max(1, Number(positionSec) || 5);
+      const st = Math.max(0, sess.lastPosSec > 0 && sess.lastPosSec <= pos ? sess.lastPosSec : pos);
+      const et = pos;
+      const trackHdr = { Authorization: `Bearer ${token}`, "User-Agent": TV_DOWNGRADED_UA };
+
+      if (!sess.pbSent) {
+        const pbParams = new URLSearchParams({
+          ns: "yt",
+          ver: "2",
+          docid: videoId,
+          len: sess.len,
+          cmt: pos.toFixed(1),
+          cpn: sess.cpn,
+          ei: sess.ei,
+          vm: sess.vm,
+          of: sess.of,
+        });
+        const r1 = await nativeHttpGet(`https://www.youtube.com/api/stats/playback?${pbParams.toString()}`, trackHdr);
+        if (r1.status === 401) {
+          token = (await getValidAccessToken(true)) || token;
+          await nativeHttpGet(`https://www.youtube.com/api/stats/playback?${pbParams.toString()}`, {
+            Authorization: `Bearer ${token}`,
+            "User-Agent": TV_DOWNGRADED_UA,
+          });
+        }
+        sess.pbSent = true;
+      }
+
+      const wtParams = new URLSearchParams({
+        ns: "yt",
+        ver: "2",
+        docid: videoId,
+        len: sess.len,
+        st: st.toFixed(1),
+        et: et.toFixed(1),
+        cmt: et.toFixed(1),
+        cpn: sess.cpn,
+        ei: sess.ei,
+        vm: sess.vm,
+        of: sess.of,
+      });
+      const r2 = await nativeHttpGet(`https://www.youtube.com/api/stats/watchtime?${wtParams.toString()}`, {
+        Authorization: `Bearer ${token}`,
+        "User-Agent": TV_DOWNGRADED_UA,
+      });
+      sess.lastPosSec = et;
+      return { synced: r2.status < 400 };
+    } catch (_) {
+      return { synced: false };
+    }
+  }
+
+  async function syncWatchHistory(videoId) {
+    return reportWatchProgressInternal(videoId, 5, 0);
+  }
+
+  async function tvBrowseRaw(body) {
     let token = await getValidAccessToken();
     if (!token) throw new Error("Bạn chưa đăng nhập tài khoản Google/YouTube.");
-    const clients = [
-      { name: "TVHTML5", ver: "7.20250312.16.00", ua: TV_UA },
-      { name: "WEB", ver: "2.20250312.04.00", ua: WEB_UA },
-    ];
-    for (const cl of clients) {
-      let res = await nativeHttpPostJson(
+    const send = (tok) =>
+      nativeHttpPostJson(
         "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
-        { context: { client: { clientName: cl.name, clientVersion: cl.ver, hl: "vi", gl: "VN" } }, browseId },
-        { Authorization: `Bearer ${token}`, "User-Agent": cl.ua }
+        {
+          context: { client: { clientName: "TVHTML5", clientVersion: "7.20250312.16.00", hl: "vi", gl: "VN" } },
+          ...body,
+        },
+        { Authorization: `Bearer ${tok}`, "User-Agent": TV_UA }
       );
-      if (res.status === 401) {
-        token = (await getValidAccessToken(true)) || token;
-        res = await nativeHttpPostJson(
-          "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
-          { context: { client: { clientName: cl.name, clientVersion: cl.ver, hl: "vi", gl: "VN" } }, browseId },
-          { Authorization: `Bearer ${token}`, "User-Agent": cl.ua }
+    let res = await send(token);
+    if (res.status === 401) {
+      token = (await getValidAccessToken(true)) || token;
+      res = await send(token);
+    }
+    if (res.status !== 200) throw new Error(`YouTube phản hồi lỗi (${res.status}).`);
+    return JSON.parse(res.body || "{}");
+  }
+
+  async function fetchInnerTubeBrowse(browseId, limit = 36, allowShort = false, followPages = 1) {
+    try {
+      const page1 = await tvBrowseRaw({ browseId });
+      const items = extractVideosFromInnerTube(page1, limit, allowShort);
+      const seen = new Set(items.map((x) => x.id));
+      let conts = extractBrowseContinuations(page1, 6);
+      if (followPages > 1 && conts.length && items.length < limit) {
+        const extraPages = await Promise.all(
+          conts.slice(0, followPages).map((c) => tvBrowseRaw({ continuation: c }).catch(() => null))
         );
+        for (const p of extraPages) {
+          if (!p) continue;
+          for (const it of extractVideosFromInnerTube(p, limit, allowShort)) {
+            if (it?.id && !seen.has(it.id)) {
+              seen.add(it.id);
+              items.push(it);
+              if (items.length >= limit) break;
+            }
+          }
+          if (items.length >= limit) break;
+        }
       }
-      if (res.status === 200) {
-        const items = extractVideosFromInnerTube(JSON.parse(res.body), limit, allowShort);
-        if (items.length) return items;
-      }
+      if (items.length) return items;
+    } catch (_) {}
+
+    let token = await getValidAccessToken();
+    if (!token) throw new Error("Bạn chưa đăng nhập tài khoản Google/YouTube.");
+    let res = await nativeHttpPostJson(
+      "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
+      { context: { client: { clientName: "WEB", clientVersion: "2.20250312.04.00", hl: "vi", gl: "VN" } }, browseId },
+      { Authorization: `Bearer ${token}`, "User-Agent": WEB_UA }
+    );
+    if (res.status === 200) {
+      return extractVideosFromInnerTube(JSON.parse(res.body), limit, allowShort);
     }
     return [];
   }
@@ -1189,39 +1428,149 @@
       };
     },
 
-    async getTrending(category = "all") {
-      if (category === "all" && readOAuth()?.access_token) {
+    async getTrending(category = "all", continuation = "", refresh = false) {
+      const cat = TRENDING_POOLS[category] ? category : "all";
+      if (cat === "all" && readOAuth()?.access_token && (!continuation || continuation.startsWith("tv:"))) {
         try {
-          const items = await fetchInnerTubeBrowse("FEwhat_to_watch", 32);
-          if (items.length) return { category, personalized: true, items };
+          let batches = [];
+          let nextConts = [];
+          if (continuation.startsWith("tv:")) {
+            const toks = JSON.parse(continuation.slice(3) || "[]");
+            const pages = await Promise.all(
+              toks.slice(0, 4).map((t) => tvBrowseRaw({ continuation: t }).catch(() => null))
+            );
+            for (const pg of pages) {
+              if (!pg) continue;
+              const vids = extractVideosFromInnerTube(pg, 30, false);
+              if (vids.length) batches.push(vids);
+              nextConts.push(...extractBrowseContinuations(pg, 2));
+            }
+          } else {
+            const page1 = await tvBrowseRaw({ browseId: "FEwhat_to_watch" });
+            const v1 = extractVideosFromInnerTube(page1, 30, false);
+            if (v1.length) batches.push(v1);
+            const shelfConts = extractBrowseContinuations(page1, 5);
+            const subPages = await Promise.all(
+              shelfConts.map((t) => tvBrowseRaw({ continuation: t }).catch(() => null))
+            );
+            for (const sp of subPages) {
+              if (!sp) continue;
+              const sv = extractVideosFromInnerTube(sp, 30, false);
+              if (sv.length) batches.push(sv);
+              nextConts.push(...extractBrowseContinuations(sp, 2));
+            }
+            if (refresh && batches.length > 1) {
+              batches = [...batches.slice(1), batches[0]];
+            }
+          }
+          const items = interleaveBatches(batches, 44);
+          if (items.length) {
+            const uniqNext = Array.from(new Set(nextConts)).slice(0, 5);
+            return {
+              category: cat,
+              personalized: true,
+              items,
+              next_continuation: uniqNext.length ? `tv:${JSON.stringify(uniqNext)}` : "",
+            };
+          }
         } catch (_) {}
       }
-      const q = TRENDING_QUERIES[category] || TRENDING_QUERIES.all;
-      return { category, personalized: false, items: await searchInnerTube(q, 16) };
+
+      if (continuation.startsWith("web:")) {
+        try {
+          const toks = JSON.parse(continuation.slice(4) || "[]");
+          const pages = await Promise.all(
+            toks.slice(0, 3).map((t) => webInnerTubePost("search", { continuation: t }).catch(() => null))
+          );
+          const batches = [];
+          const nextToks = [];
+          for (const pg of pages) {
+            if (!pg) continue;
+            batches.push(extractVideosFromInnerTube(pg, 24, false));
+            nextToks.push(...extractBrowseContinuations(pg, 1));
+          }
+          const items = interleaveBatches(batches, 36);
+          return {
+            category: cat,
+            personalized: false,
+            items,
+            next_continuation: nextToks.length ? `web:${JSON.stringify(nextToks.slice(0, 3))}` : "",
+          };
+        } catch (_) {}
+      }
+
+      const pool = TRENDING_POOLS[cat] || TRENDING_POOLS.all;
+      const offset = refresh ? Math.floor(Math.random() * pool.length) : 0;
+      const picked = Array.from({ length: Math.min(3, pool.length) }, (_, idx) => pool[(offset + idx) % pool.length]);
+      const jobs = picked.map((q) => webInnerTubePost("search", { query: q }).catch(() => null));
+      if (cat === "gaming") {
+        jobs.unshift(webInnerTubePost("browse", { browseId: "UC4R8DWoMoI7CAwX8_LjQHig" }).catch(() => null));
+      }
+      const payloads = await Promise.all(jobs);
+      const batches = [];
+      const nextToks = [];
+      for (const pl of payloads) {
+        if (!pl) continue;
+        batches.push(extractVideosFromInnerTube(pl, 20, false));
+        nextToks.push(...extractBrowseContinuations(pl, 1));
+      }
+      const items = interleaveBatches(batches, 38);
+      return {
+        category: cat,
+        personalized: false,
+        items,
+        next_continuation: nextToks.length ? `web:${JSON.stringify(nextToks.slice(0, 3))}` : "",
+      };
     },
 
-    async getShorts(q = "") {
+    async getShorts(q = "", excludeCsv = "", seed = 0) {
       try {
         const cleanQ = (q || "").trim();
-        const queries = cleanQ ? [cleanQ] : ["#shorts", "shorts hài hước việt nam"];
-        const items = [];
-        const seen = new Set();
-        for (const query of queries) {
-          try {
-            const data = await webInnerTubePost("search", { query });
-            for (const it of extractShortsFromInnerTube(data, 30)) {
-              if (it?.id && !seen.has(it.id)) {
-                seen.add(it.id);
-                items.push(it);
-              }
-            }
-          } catch (_) {}
-          if (items.length >= 24) break;
+        const excludeSet = new Set(
+          String(excludeCsv || "")
+            .split(",")
+            .map((x) => x.trim())
+            .filter(Boolean)
+        );
+        let queries = [];
+        if (cleanQ) {
+          queries = [cleanQ];
+        } else {
+          const start = Math.abs(Number(seed) || Math.floor(Math.random() * SHORTS_TOPIC_POOL.length)) % SHORTS_TOPIC_POOL.length;
+          for (let i = 0; i < 4; i += 1) {
+            queries.push(SHORTS_TOPIC_POOL[(start + i * 3) % SHORTS_TOPIC_POOL.length]);
+          }
         }
-        return { items: items.slice(0, 24) };
+
+        const page1Results = await Promise.all(
+          queries.map((query) => webInnerTubePost("search", { query }).catch(() => null))
+        );
+        const batches = [];
+        const contPromises = [];
+        for (const data of page1Results) {
+          if (!data) continue;
+          batches.push(extractShortsFromInnerTube(data, 35));
+          const ctok = extractBrowseContinuations(data, 1)[0];
+          if (ctok && (cleanQ || excludeSet.size > 0)) {
+            contPromises.push(webInnerTubePost("search", { continuation: ctok }).catch(() => null));
+          }
+        }
+        if (contPromises.length) {
+          const p2Results = await Promise.all(contPromises);
+          for (const d2 of p2Results) {
+            if (d2) batches.push(extractShortsFromInnerTube(d2, 35));
+          }
+        }
+
+        const mixed = interleaveBatches(batches, 70).filter((it) => it?.id && !excludeSet.has(it.id));
+        return { items: mixed.slice(0, 36) };
       } catch (_) {
         return { items: [] };
       }
+    },
+
+    async reportWatchProgress(videoId, positionSec = 0, durationSec = 0) {
+      return reportWatchProgressInternal(videoId, positionSec, durationSec);
     },
 
     async search(query, limit = 18) {
@@ -1712,11 +2061,11 @@
     },
 
     async getYoutubeHistory() {
-      return { items: await fetchInnerTubeBrowse("FEhistory", 50, true) };
+      return { items: await fetchInnerTubeBrowse("FEhistory", 45, true, 3) };
     },
 
     async getYoutubeSubscriptions() {
-      return { items: await fetchInnerTubeBrowse("FEsubscriptions", 36, true) };
+      return { items: await fetchInnerTubeBrowse("FEsubscriptions", 42, true, 2) };
     },
   };
 

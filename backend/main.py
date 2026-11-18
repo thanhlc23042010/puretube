@@ -3,9 +3,11 @@ import hashlib
 import io
 import json
 import os
+import random
 import re
 import shutil
 import socket
+import string
 import subprocess
 import time
 import urllib.parse
@@ -122,7 +124,75 @@ TRENDING_QUERIES = {
     "gaming": "ytsearch16:review game mới nhất highlights tiếng việt",
     "tech": "ytsearch16:đánh giá công nghệ smartphone AI mới nhất tiếng việt",
     "chill": "ytsearch16:nhạc lofi chill không lời học bài làm việc",
+    "entertainment": "ytsearch16:vlog ẩm thực giải trí việt nam mới nhất",
+    "knowledge": "ytsearch16:khám phá khoa học vũ trụ thuyết minh",
 }
+
+TRENDING_POOLS: Dict[str, List[str]] = {
+    "all": [
+        "video thịnh hành việt nam hôm nay mới nhất",
+        "vlog ẩm thực du lịch khám phá việt nam mới",
+        "MV ca nhạc Vpop remix hot nhất tuần",
+        "review phim hay kiến thức khoa học thú vị",
+        "highlights bóng đá thể thao hôm nay mới",
+        "review công nghệ smartphone AI mới nhất",
+    ],
+    "music": [
+        "MV ca nhạc Vpop mới nhất 2026",
+        "nhạc remix edm tiktok việt nam hay nhất",
+        "live session acoustic ballad việt nam",
+        "top hit nhạc quốc tế US UK mới hay",
+    ],
+    "gaming": [
+        "review game pc mobile mới nhất tiếng việt",
+        "minecraft sinh tồn việt nam mới nhất",
+        "liên quân tốc chiến valorant highlights việt nam",
+        "game kinh dị phiêu lưu mới việt hóa",
+    ],
+    "tech": [
+        "đánh giá smartphone flagship mới nhất tiếng việt",
+        "review laptop AI đồ họa công nghệ mới",
+        "tin tức công nghệ AI lập trình mới nhất",
+        "mẹo hay thủ thuật điện thoại máy tính",
+    ],
+    "chill": [
+        "nhạc lofi chill học bài làm việc không lời",
+        "nhạc piano thư giãn nhẹ nhàng dễ ngủ",
+        "acoustic guitar cafe sáng thư giãn",
+        "tiếng mưa rừng tự nhiên thư giãn tập trung",
+    ],
+    "entertainment": [
+        "vlog giải trí hài hước việt nam mới nhất",
+        "ẩm thực đường phố review món ngon việt nam",
+        "podcast trò chuyện truyền cảm hứng hay",
+        "thử thách du lịch khám phá đó đây",
+    ],
+    "knowledge": [
+        "khám phá khoa học vũ trụ bí ẩn thuyết minh",
+        "tóm tắt lịch sử thế giới việt nam hay nhất",
+        "tài chính cá nhân kỹ năng phát triển bản thân",
+        "phim tài liệu thiên nhiên động vật hoang dã",
+    ],
+}
+
+SHORTS_TOPIC_POOL: List[str] = [
+    "#shorts việt nam",
+    "shorts hài hước việt nam mới",
+    "shorts mới nhất hôm nay",
+    "tiktok việt nam hot shorts",
+    "shorts công nghệ review nhanh",
+    "shorts ẩm thực món ngon nấu ăn",
+    "shorts âm nhạc remix hay nhất",
+    "shorts bóng đá thể thao kỹ thuật",
+    "shorts thú cưng chó mèo hài hước",
+    "shorts kiến thức thú vị khoa học",
+    "shorts du lịch cảnh đẹp thế giới",
+    "shorts game minecraft roblox hay",
+]
+
+TV_DOWNGRADED_UA = "Mozilla/5.0 (DirectFB; Linux x86_64) Cobalt/4.13031-qa (unlike Gecko) Starboard/1"
+STS_CACHE: Dict[str, Any] = {"value": 20772, "expires_at": 0.0}
+WATCH_TRACK_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 app = FastAPI(title="PureTube API", version="2.0.0")
 
@@ -1798,82 +1868,286 @@ async def fetch_video_next_meta(video_id: str) -> Dict[str, Any]:
     }
 
 
-async def fetch_innertube_browse_videos(browse_id: str, limit: int = 36) -> List[Dict[str, Any]]:
-    """Fetch personalized YouTube feeds (FEhistory / FEsubscriptions) using OAuth2 token."""
+def extract_browse_continuations(payload: Any, limit: int = 6) -> List[str]:
+    """Extract InnerTube browse/search continuation tokens recursively."""
+    tokens: List[str] = []
+    seen: set = set()
+
+    def _walk(node: Any) -> None:
+        if len(tokens) >= limit or not node:
+            return
+        if isinstance(node, list):
+            for el in node:
+                _walk(el)
+            return
+        if not isinstance(node, dict):
+            return
+        tok = (
+            (node.get("nextContinuationData") or {}).get("continuation")
+            or ((node.get("continuationEndpoint") or {}).get("continuationCommand") or {}).get("token")
+            or (node.get("continuationCommand") or {}).get("token")
+            or ""
+        )
+        if isinstance(tok, str) and len(tok) > 12 and tok not in seen:
+            seen.add(tok)
+            tokens.append(tok)
+        for v in node.values():
+            if isinstance(v, (dict, list)):
+                _walk(v)
+
+    _walk(payload)
+    return tokens
+
+
+def interleave_video_batches(batches: List[List[Dict[str, Any]]], limit: int = 48) -> List[Dict[str, Any]]:
+    """Round-robin interleave video lists while deduplicating by video ID for feed variety."""
+    out: List[Dict[str, Any]] = []
+    seen: set = set()
+    max_len = max((len(b) for b in batches if b), default=0)
+    for idx in range(max_len):
+        for batch in batches:
+            if not batch or idx >= len(batch):
+                continue
+            item = batch[idx]
+            vid = item.get("id")
+            if vid and vid not in seen:
+                seen.add(vid)
+                out.append(item)
+                if len(out) >= limit:
+                    return out
+    return out
+
+
+async def tv_innertube_browse_raw(body: Dict[str, Any]) -> Dict[str, Any]:
+    """Call TVHTML5 browse/continuation endpoint using OAuth2 token."""
     token = await get_valid_oauth_token()
     if not token:
         raise HTTPException(status_code=401, detail="Chưa có phiên đăng nhập OAuth hợp lệ.")
-
-    clients_to_try = [
-        ("TVHTML5", "7.20250312.16.00", "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version"),
-        ("WEB", "2.20250312.04.00", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"),
-    ]
+    payload = {
+        "context": {"client": {"clientName": "TVHTML5", "clientVersion": "7.20250312.16.00", "hl": "vi", "gl": "VN"}},
+        **body,
+    }
     async with httpx.AsyncClient(timeout=12.0) as client:
-        for cname, cver, ua in clients_to_try:
+        resp = await client.post(
+            "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
+            headers={"Authorization": f"Bearer {token}", "User-Agent": TV_INNERTUBE_UA},
+            json=payload,
+        )
+        if resp.status_code == 401:
+            token = await get_valid_oauth_token(force_refresh=True) or token
             resp = await client.post(
                 "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
-                headers={"Authorization": f"Bearer {token}", "User-Agent": ua},
-                json={
-                    "context": {"client": {"clientName": cname, "clientVersion": cver, "hl": "vi", "gl": "VN"}},
-                    "browseId": browse_id,
-                },
+                headers={"Authorization": f"Bearer {token}", "User-Agent": TV_INNERTUBE_UA},
+                json=payload,
             )
-            if resp.status_code == 401:
-                token = await get_valid_oauth_token(force_refresh=True) or token
-                resp = await client.post(
-                    "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
-                    headers={"Authorization": f"Bearer {token}", "User-Agent": ua},
-                    json={
-                        "context": {"client": {"clientName": cname, "clientVersion": cver, "hl": "vi", "gl": "VN"}},
-                        "browseId": browse_id,
-                    },
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"YouTube phản hồi lỗi ({resp.status_code}).")
+    return resp.json()
+
+
+async def fetch_innertube_browse_videos(
+    browse_id: str, limit: int = 36, follow_pages: int = 1
+) -> List[Dict[str, Any]]:
+    """Fetch personalized YouTube feeds (FEhistory / FEsubscriptions / FEwhat_to_watch) using OAuth2 token."""
+    try:
+        p1 = await tv_innertube_browse_raw({"browseId": browse_id})
+        items = extract_videos_from_innertube(p1, limit=limit)
+        seen = {x["id"] for x in items}
+        if follow_pages > 1 and len(items) < limit:
+            conts = extract_browse_continuations(p1, limit=6)
+            if conts:
+                extra_pages = await asyncio.gather(
+                    *(tv_innertube_browse_raw({"continuation": c}) for c in conts[:follow_pages]),
+                    return_exceptions=True,
                 )
-            if resp.status_code == 200:
-                items = extract_videos_from_innertube(resp.json(), limit=limit)
-                if items:
-                    return items
+                for ep in extra_pages:
+                    if not isinstance(ep, dict):
+                        continue
+                    for it in extract_videos_from_innertube(ep, limit=limit):
+                        if it["id"] not in seen:
+                            seen.add(it["id"])
+                            items.append(it)
+                            if len(items) >= limit:
+                                break
+                    if len(items) >= limit:
+                        break
+        if items:
+            return items
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+
+    token = await get_valid_oauth_token()
+    if not token:
+        raise HTTPException(status_code=401, detail="Chưa có phiên đăng nhập OAuth hợp lệ.")
+    async with httpx.AsyncClient(timeout=12.0) as client:
+        resp = await client.post(
+            "https://www.youtube.com/youtubei/v1/browse?prettyPrint=false",
+            headers={"Authorization": f"Bearer {token}", "User-Agent": WEB_INNERTUBE_UA},
+            json={
+                "context": {"client": {"clientName": "WEB", "clientVersion": "2.20250312.04.00", "hl": "vi", "gl": "VN"}},
+                "browseId": browse_id,
+            },
+        )
+        if resp.status_code == 200:
+            return extract_videos_from_innertube(resp.json(), limit=limit)
     return []
+
+
+async def get_signature_timestamp_async() -> int:
+    """Fetch and cache YouTube 5-digit signatureTimestamp used by TV_DOWNGRADED watch tracking."""
+    now = time.time()
+    if STS_CACHE["value"] and now < STS_CACHE["expires_at"]:
+        return int(STS_CACHE["value"])
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.get(
+                "https://www.youtube.com/embed/jNQXAC9IVRw",
+                headers={"User-Agent": WEB_INNERTUBE_UA},
+            )
+        if resp.status_code == 200:
+            m = re.search(r'"sts"\s*:\s*(\d{4,6})', resp.text)
+            if m:
+                STS_CACHE["value"] = int(m.group(1))
+                STS_CACHE["expires_at"] = now + 43200.0
+    except Exception:
+        pass
+    return int(STS_CACHE["value"] or 20772)
+
+
+async def ensure_watch_tracking_session(video_id: str) -> Optional[Dict[str, Any]]:
+    """Obtain an OAuth-bound TV_DOWNGRADED playbackTracking session (ei/vm/of) for FEhistory updates."""
+    cached = WATCH_TRACK_SESSIONS.get(video_id)
+    if cached and cached["expires_at"] > time.time():
+        return cached
+    token = await get_valid_oauth_token()
+    if not token:
+        return None
+    vd = await asyncio.to_thread(get_visitor_data_sync)
+    sts = await get_signature_timestamp_async()
+    cpn = "".join(random.choices(string.ascii_letters + string.digits + "-_", k=16))
+
+    body = {
+        "context": {
+            "client": {
+                "clientName": "TVHTML5",
+                "clientVersion": "5.20260901",
+                "clientScreen": "WATCH",
+                "userAgent": TV_DOWNGRADED_UA,
+                "hl": "vi",
+                "gl": "VN",
+                **({"visitorData": vd} if vd else {}),
+            },
+            "user": {"enableSafetyMode": False, "lockedSafetyMode": False},
+        },
+        "playbackContext": {
+            "contentPlaybackContext": {
+                "html5Preference": "HTML5_PREF_WANTS",
+                "lactMilliseconds": 60000,
+                "isInlinePlaybackNoAd": True,
+                "signatureTimestamp": sts,
+            },
+            "devicePlaybackCapabilities": {"supportsVp9Encoding": True, "supportXhr": False},
+        },
+        "racyCheckOk": True,
+        "contentCheckOk": True,
+        "videoId": video_id,
+        "cpn": cpn,
+    }
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        for attempt in range(2):
+            hdrs = {
+                "Authorization": f"Bearer {token}",
+                "User-Agent": TV_DOWNGRADED_UA,
+                "X-YouTube-Client-Name": "7",
+                "X-YouTube-Client-Version": "5.20260901",
+            }
+            if vd:
+                hdrs["X-Goog-Visitor-Id"] = vd
+            resp = await client.post(
+                "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
+                headers=hdrs,
+                json=body,
+            )
+            if resp.status_code == 401 and attempt == 0:
+                token = await get_valid_oauth_token(force_refresh=True) or ""
+                if not token:
+                    return None
+                continue
+            if resp.status_code != 200:
+                return None
+            pdata = resp.json()
+            pb_base = ((pdata.get("playbackTracking") or {}).get("videostatsPlaybackUrl") or {}).get("baseUrl") or ""
+            if not pb_base:
+                return None
+            qs = urllib.parse.parse_qs(urllib.parse.urlparse(pb_base).query)
+            ei = (qs.get("ei") or [""])[0]
+            of_p = (qs.get("of") or [""])[0]
+            vm = (qs.get("vm") or [""])[0]
+            len_s = str((pdata.get("videoDetails") or {}).get("lengthSeconds") or (qs.get("len") or ["60"])[0])
+            if not ei or not of_p:
+                return None
+            sess = {
+                "video_id": video_id,
+                "cpn": cpn,
+                "ei": ei,
+                "vm": vm,
+                "of": of_p,
+                "len": len_s,
+                "last_pos": 0.0,
+                "pb_sent": False,
+                "expires_at": time.time() + 1800.0,
+            }
+            WATCH_TRACK_SESSIONS[video_id] = sess
+            return sess
+    return None
+
+
+async def report_watch_progress_oauth(video_id: str, position_sec: float = 5.0, duration_sec: float = 0.0) -> bool:
+    """Ping YouTube /api/stats/playback + /api/stats/watchtime using OAuth2 Bearer so FEhistory updates."""
+    token = await get_valid_oauth_token()
+    if not token:
+        return False
+    sess = await ensure_watch_tracking_session(video_id)
+    if not sess:
+        return False
+    if duration_sec > 0 and sess["len"] in ("", "60"):
+        sess["len"] = str(int(duration_sec))
+    pos = max(1.0, float(position_sec or 5.0))
+    st = max(0.0, sess["last_pos"] if 0 < sess["last_pos"] <= pos else pos)
+    et = pos
+    track_hdrs = {"Authorization": f"Bearer {token}", "User-Agent": TV_DOWNGRADED_UA}
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        if not sess["pb_sent"]:
+            pb_qs = urllib.parse.urlencode({
+                "ns": "yt", "ver": "2", "docid": video_id, "len": sess["len"], "cmt": f"{pos:.1f}",
+                "cpn": sess["cpn"], "ei": sess["ei"], "vm": sess["vm"], "of": sess["of"],
+            })
+            r1 = await client.get(f"https://www.youtube.com/api/stats/playback?{pb_qs}", headers=track_hdrs)
+            if r1.status_code == 401:
+                token = await get_valid_oauth_token(force_refresh=True) or token
+                track_hdrs["Authorization"] = f"Bearer {token}"
+                await client.get(f"https://www.youtube.com/api/stats/playback?{pb_qs}", headers=track_hdrs)
+            sess["pb_sent"] = True
+        wt_qs = urllib.parse.urlencode({
+            "ns": "yt", "ver": "2", "docid": video_id, "len": sess["len"],
+            "st": f"{st:.1f}", "et": f"{et:.1f}", "cmt": f"{et:.1f}",
+            "cpn": sess["cpn"], "ei": sess["ei"], "vm": sess["vm"], "of": sess["of"],
+        })
+        r2 = await client.get(f"https://www.youtube.com/api/stats/watchtime?{wt_qs}", headers=track_hdrs)
+        sess["last_pos"] = et
+        SEARCH_CACHE.pop("yt_history", None)
+        return r2.status_code < 400
 
 
 async def sync_watch_to_youtube_history(video_id: str) -> None:
     """Sync watched video back to signed-in YouTube watch history (OAuth2 or Cookies)."""
-    token = await get_valid_oauth_token()
-    if token:
+    if has_oauth_token():
         try:
-            headers = {
-                "Authorization": f"Bearer {token}",
-                "User-Agent": "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version",
-            }
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                player_resp = await client.post(
-                    "https://www.youtube.com/youtubei/v1/player?prettyPrint=false",
-                    headers=headers,
-                    json={
-                        "context": {
-                            "client": {
-                                "clientName": "TVHTML5",
-                                "clientVersion": "7.20250312.16.00",
-                                "hl": "vi",
-                                "gl": "VN",
-                            }
-                        },
-                        "videoId": video_id,
-                    },
-                )
-                pdata = player_resp.json()
-                base_url = (
-                    pdata.get("playbackTracking", {})
-                    .get("videostatsPlaybackUrl", {})
-                    .get("baseUrl")
-                )
-                if base_url:
-                    if not base_url.startswith("http"):
-                        base_url = "https://www.youtube.com" + base_url
-                    sep = "&" if "?" in base_url else "?"
-                    length_s = pdata.get("videoDetails", {}).get("lengthSeconds", "60")
-                    ping_url = f"{base_url}{sep}cpn=PureTubePlay123&ver=2&cmt=0&len={length_s}"
-                    await client.get(ping_url, headers=headers)
-            return
+            ok = await report_watch_progress_oauth(video_id, 5.0, 0.0)
+            if ok:
+                return
         except Exception:
             pass
     if has_cookies_file():
@@ -2288,7 +2562,8 @@ async def fetch_authenticated_feed(
     items: List[Dict[str, Any]] = []
     if has_oauth_token():
         try:
-            items = await fetch_innertube_browse_videos(browse_id, limit=limit)
+            pages_to_follow = 3 if browse_id == "FEhistory" else 2
+            items = await fetch_innertube_browse_videos(browse_id, limit=limit, follow_pages=pages_to_follow)
             SEARCH_CACHE[cache_key] = {"expires_at": time.time() + cache_ttl, "items": items}
             return {"items": items}
         except HTTPException:
@@ -2341,10 +2616,22 @@ async def api_youtube_history() -> Dict[str, Any]:
         browse_id="FEhistory",
         feed_url="https://www.youtube.com/feed/history",
         cache_key="yt_history",
-        cache_ttl=120,
-        limit=36,
+        cache_ttl=45,
+        limit=45,
         err_label="Không thể đồng bộ lịch sử YouTube",
     )
+
+
+@app.post("/api/youtube/watchtime")
+async def api_youtube_watchtime(payload: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """Record watchtime/progress to signed-in YouTube account history."""
+    vid = extract_video_id_from_text(str(payload.get("video_id") or ""))
+    if not vid:
+        return {"synced": False}
+    pos = float(payload.get("position_sec") or 5.0)
+    dur = float(payload.get("duration_sec") or 0.0)
+    ok = await report_watch_progress_oauth(vid, pos, dur)
+    return {"synced": ok}
 
 
 @app.get("/api/youtube/subscriptions")
@@ -2355,73 +2642,154 @@ async def api_youtube_subscriptions() -> Dict[str, Any]:
         feed_url="https://www.youtube.com/feed/subscriptions",
         cache_key="yt_subs",
         cache_ttl=180,
-        limit=28,
+        limit=42,
         err_label="Không thể đồng bộ kênh đăng ký YouTube",
     )
 
 
 @app.get("/api/trending")
-async def api_trending(category: str = Query("all")) -> Dict[str, Any]:
-    """Return personalized YouTube Home feed (when signed in) or trending videos by category."""
-    cat = category if category in TRENDING_QUERIES else "all"
-    if cat == "all" and has_oauth_token():
+async def api_trending(
+    category: str = Query("all"),
+    continuation: str = Query(""),
+    refresh: int = Query(0),
+) -> Dict[str, Any]:
+    """Return diverse personalized YouTube Home feed or trending videos with continuation support."""
+    cat = category if category in TRENDING_POOLS else "all"
+    cont = continuation.strip()
+
+    if cat == "all" and has_oauth_token() and (not cont or cont.startswith("tv:")):
         cache_key = "yt_home_all"
-        cached = SEARCH_CACHE.get(cache_key)
-        if cached and cached["expires_at"] > time.time():
-            return {"category": cat, "personalized": True, "items": cached["items"]}
+        if not cont and not refresh:
+            cached = SEARCH_CACHE.get(cache_key)
+            if cached and cached["expires_at"] > time.time():
+                return {"category": cat, "personalized": True, "items": cached["items"], "next_continuation": cached.get("next_continuation", "")}
         try:
-            items = await fetch_innertube_browse_videos("FEwhat_to_watch", limit=32)
+            batches: List[List[Dict[str, Any]]] = []
+            next_conts: List[str] = []
+            if cont.startswith("tv:"):
+                toks = json.loads(cont[3:] or "[]")
+                pages = await asyncio.gather(*(tv_innertube_browse_raw({"continuation": t}) for t in toks[:4]), return_exceptions=True)
+                for pg in pages:
+                    if not isinstance(pg, dict):
+                        continue
+                    vids = extract_videos_from_innertube(pg, limit=30)
+                    if vids:
+                        batches.append(vids)
+                    next_conts.extend(extract_browse_continuations(pg, limit=2))
+            else:
+                p1 = await tv_innertube_browse_raw({"browseId": "FEwhat_to_watch"})
+                v1 = extract_videos_from_innertube(p1, limit=30)
+                if v1:
+                    batches.append(v1)
+                shelf_conts = extract_browse_continuations(p1, limit=5)
+                sub_pages = await asyncio.gather(*(tv_innertube_browse_raw({"continuation": t}) for t in shelf_conts), return_exceptions=True)
+                for sp in sub_pages:
+                    if not isinstance(sp, dict):
+                        continue
+                    sv = extract_videos_from_innertube(sp, limit=30)
+                    if sv:
+                        batches.append(sv)
+                    next_conts.extend(extract_browse_continuations(sp, limit=2))
+                if refresh and len(batches) > 1:
+                    batches = batches[1:] + batches[:1]
+            items = interleave_video_batches(batches, limit=44)
             if items:
-                SEARCH_CACHE[cache_key] = {"expires_at": time.time() + 180, "items": items}
-                return {"category": cat, "personalized": True, "items": items}
+                uniq_next = list(dict.fromkeys(next_conts))[:5]
+                next_tok = f"tv:{json.dumps(uniq_next)}" if uniq_next else ""
+                if not cont:
+                    SEARCH_CACHE[cache_key] = {"expires_at": time.time() + 180, "items": items, "next_continuation": next_tok}
+                return {"category": cat, "personalized": True, "items": items, "next_continuation": next_tok}
         except Exception:
             pass
 
-    cache_key = f"trending:{cat}"
-    cached = SEARCH_CACHE.get(cache_key)
-    if cached and cached["expires_at"] > time.time():
-        return {"category": cat, "personalized": False, "items": cached["items"]}
+    if cont.startswith("web:"):
+        try:
+            toks = json.loads(cont[4:] or "[]")
+            pages = await asyncio.gather(*(innertube_web_post("search", {"continuation": t}) for t in toks[:3]), return_exceptions=True)
+            batches = []
+            next_toks = []
+            for pg in pages:
+                if not isinstance(pg, dict):
+                    continue
+                batches.append(extract_videos_from_innertube(pg, limit=24))
+                next_toks.extend(extract_browse_continuations(pg, limit=1))
+            items = interleave_video_batches(batches, limit=36)
+            return {
+                "category": cat,
+                "personalized": False,
+                "items": items,
+                "next_continuation": f"web:{json.dumps(next_toks[:3])}" if next_toks else "",
+            }
+        except Exception:
+            return {"category": cat, "personalized": False, "items": [], "next_continuation": ""}
 
-    items = await asyncio.to_thread(run_flat_search_sync, TRENDING_QUERIES[cat], False)
-    SEARCH_CACHE[cache_key] = {
-        "expires_at": time.time() + SEARCH_CACHE_TTL,
-        "items": items,
-    }
-    return {"category": cat, "personalized": False, "items": items}
+    cache_key = f"trending_diverse:{cat}"
+    if not refresh:
+        cached = SEARCH_CACHE.get(cache_key)
+        if cached and cached["expires_at"] > time.time():
+            return {"category": cat, "personalized": False, "items": cached["items"], "next_continuation": cached.get("next_continuation", "")}
+
+    pool = TRENDING_POOLS.get(cat) or TRENDING_POOLS["all"]
+    offset = random.randrange(len(pool)) if refresh else 0
+    picked = [pool[(offset + i) % len(pool)] for i in range(min(3, len(pool)))]
+    coros = [innertube_web_post("search", {"query": q}) for q in picked]
+    if cat == "gaming":
+        coros.insert(0, innertube_web_post("browse", {"browseId": "UC4R8DWoMoI7CAwX8_LjQHig"}))
+    payloads = await asyncio.gather(*coros, return_exceptions=True)
+    batches = []
+    next_toks = []
+    for pl in payloads:
+        if not isinstance(pl, dict):
+            continue
+        batches.append(extract_videos_from_innertube(pl, limit=20))
+        next_toks.extend(extract_browse_continuations(pl, limit=1))
+    items = interleave_video_batches(batches, limit=38)
+    next_tok = f"web:{json.dumps(next_toks[:3])}" if next_toks else ""
+    SEARCH_CACHE[cache_key] = {"expires_at": time.time() + SEARCH_CACHE_TTL, "items": items, "next_continuation": next_tok}
+    return {"category": cat, "personalized": False, "items": items, "next_continuation": next_tok}
 
 
 @app.get("/api/shorts")
-async def api_shorts(q: str = Query("")) -> Dict[str, Any]:
-    """Return clean vertical YouTube Shorts feed."""
+async def api_shorts(
+    q: str = Query(""),
+    exclude: str = Query(""),
+    seed: int = Query(0),
+) -> Dict[str, Any]:
+    """Return diverse, non-repeating vertical YouTube Shorts feed with continuation & exclusion."""
     clean_q = q.strip()
-    queries = [clean_q] if clean_q else ["#shorts", "shorts hài hước việt nam"]
-    cache_key = f"shorts:{clean_q.lower() or '__default__'}"
-    cached = SEARCH_CACHE.get(cache_key)
-    if cached and cached["expires_at"] > time.time():
-        return {"items": cached["items"]}
-    items: List[Dict[str, Any]] = []
-    seen: set = set()
-    for query in queries:
-        try:
-            data = await innertube_web_post("search", {"query": query})
-            batch = extract_shorts_from_innertube(data, limit=30)
-            # Also collect standalone Shorts renderers whose videoRenderer embeds reelWatchEndpoint
-            for extra in extract_videos_from_innertube(data, limit=40):
-                if extra.get("is_short") and extra.get("id"):
-                    batch.append(extra)
-            for it in batch:
-                vid = it.get("id")
-                if vid and vid not in seen:
-                    seen.add(vid)
-                    it["is_short"] = True
-                    items.append(it)
-        except Exception:
-            pass
-        if len(items) >= 24:
-            break
-    items = items[:24]
-    SEARCH_CACHE[cache_key] = {"expires_at": time.time() + 300, "items": items}
-    return {"items": items}
+    exclude_set = {x.strip() for x in exclude.split(",") if x.strip()}
+    if clean_q:
+        queries = [clean_q]
+    else:
+        start = (abs(seed) if seed else random.randrange(len(SHORTS_TOPIC_POOL))) % len(SHORTS_TOPIC_POOL)
+        queries = [SHORTS_TOPIC_POOL[(start + i * 3) % len(SHORTS_TOPIC_POOL)] for i in range(4)]
+
+    p1_results = await asyncio.gather(*(innertube_web_post("search", {"query": qry}) for qry in queries), return_exceptions=True)
+    batches: List[List[Dict[str, Any]]] = []
+    cont_coros = []
+    for data in p1_results:
+        if not isinstance(data, dict):
+            continue
+        batches.append(extract_shorts_from_innertube(data, limit=35))
+        ctok = extract_browse_continuations(data, limit=1)
+        if ctok and (clean_q or exclude_set):
+            cont_coros.append(innertube_web_post("search", {"continuation": ctok[0]}))
+    if cont_coros:
+        p2_results = await asyncio.gather(*cont_coros, return_exceptions=True)
+        for d2 in p2_results:
+            if isinstance(d2, dict):
+                batches.append(extract_shorts_from_innertube(d2, limit=35))
+
+    mixed = interleave_video_batches(batches, limit=70)
+    filtered = []
+    for it in mixed:
+        vid = it.get("id")
+        if vid and vid not in exclude_set:
+            it["is_short"] = True
+            filtered.append(it)
+            if len(filtered) >= 36:
+                break
+    return {"items": filtered}
 
 
 @app.get("/api/search")

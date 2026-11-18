@@ -2669,3 +2669,24 @@ textarea:focus-visible {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
 }
+
+.feed-load-more-wrap {
+  display: flex;
+  justify-content: center;
+  padding: 20px 0 8px;
+}
+
+.shorts-topic-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 0 4px 10px;
+  scrollbar-width: none;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.shorts-topic-strip::-webkit-scrollbar {
+  display: none;
+}

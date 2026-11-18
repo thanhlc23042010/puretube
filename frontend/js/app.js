@@ -1,8 +1,12 @@
 (function () {
+  const SEEN_SHORTS_KEY = "puretube_seen_shorts_v1";
+
   const state = {
     activeTab: "home",
     category: "all",
     searchQuery: "",
+    homeNextToken: "",
+    homeItems: [],
     activeSubChannel: null,
     ytPlaylistItemsMap: {},
     expandedYtPlaylists: { WL: true, LL: true },
@@ -12,6 +16,9 @@
     queueName: "",
     shortsItems: [],
     shortsIndex: 0,
+    shortsTopic: "",
+    shortsSeed: Math.floor(Math.random() * 12) + 1,
+    shortsLoadingMore: false,
     shortsMuted: false,
     shortsVideoData: null,
     channelPage: { ref: "", name: "", tab: "videos", data: null },
@@ -24,6 +31,24 @@
     suggestTimer: null,
     prefetchHoverTimer: null,
   };
+
+  function getSeenShortIds() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(SEEN_SHORTS_KEY) || "[]");
+      return Array.isArray(arr) ? arr : [];
+    } catch (_) {
+      return [];
+    }
+  }
+
+  function markShortSeen(vid) {
+    if (!vid) return;
+    try {
+      const list = getSeenShortIds().filter((id) => id !== vid);
+      list.push(vid);
+      localStorage.setItem(SEEN_SHORTS_KEY, JSON.stringify(list.slice(-240)));
+    } catch (_) {}
+  }
 
   const SPONSOR_LABELS = {
     sponsor: { label: "Quảng cáo tài trợ", color: "#10B981" },
@@ -76,8 +101,8 @@
       .join("");
   }
 
-  function renderVideoGrid(container, items) {
-    if (!items || !items.length) {
+  function renderVideoGrid(container, items, append = false) {
+    if (!append && (!items || !items.length)) {
       container.innerHTML = `
         <div class="empty-state" style="grid-column: 1 / -1;">
           <h2>Không tìm thấy video phù hợp</h2>
@@ -85,8 +110,9 @@
         </div>`;
       return;
     }
+    if (!items || !items.length) return;
 
-    container.innerHTML = items
+    const html = items
       .map((item) => {
         const initial = (item.channel || "P").trim().charAt(0).toUpperCase();
         const viewText = item.view_count ? PureAPI.formatViews(item.view_count) : "Không quảng cáo";
@@ -107,8 +133,7 @@
       })
       .join("");
 
-    container.querySelectorAll(".video-card").forEach((card, idx) => {
-      const video = items[idx];
+    const bindCard = (card, video) => {
       card.addEventListener("mouseenter", () => scheduleHoverPrefetch(video.id));
       card.addEventListener("touchstart", () => PureAPI.prefetchVideo(video.id), { passive: true });
       card.addEventListener("click", () => {
@@ -117,10 +142,21 @@
         state.queueName = "";
         openWatchVideo(video);
       });
-    });
+    };
 
-    // Warm up top 2 videos immediately in background
-    items.slice(0, 2).forEach((v) => PureAPI.prefetchVideo(v.id));
+    if (append) {
+      const startIdx = container.querySelectorAll(".video-card").length;
+      container.insertAdjacentHTML("beforeend", html);
+      const cards = container.querySelectorAll(".video-card");
+      items.forEach((video, i) => {
+        const card = cards[startIdx + i];
+        if (card) bindCard(card, video);
+      });
+    } else {
+      container.innerHTML = html;
+      container.querySelectorAll(".video-card").forEach((card, idx) => bindCard(card, items[idx]));
+      items.slice(0, 2).forEach((v) => PureAPI.prefetchVideo(v.id));
+    }
   }
 
   function stopShortsPlayback() {
@@ -208,26 +244,54 @@
     updateAuthButtonUI();
   }
 
-  async function loadTrending(category) {
+  async function loadTrending(category, { refresh = false, append = false } = {}) {
     state.category = category;
     state.searchQuery = "";
-    document.getElementById("home-title").textContent =
-      category === "all"
-        ? "Video thịnh hành sạch quảng cáo"
-        : `Chủ đề: ${document.querySelector(`.chip[data-category="${category}"]`)?.textContent || "Khám phá"}`;
-    document.getElementById("clear-search-results-btn").classList.add("hidden");
-    document.getElementById("category-strip").classList.remove("hidden");
-
     const grid = document.getElementById("home-video-grid");
-    renderSkeletonGrid(grid, 8);
+    const moreWrap = document.getElementById("home-load-more-wrap");
+    const moreBtn = document.getElementById("home-load-more-btn");
+
+    if (!append) {
+      state.homeNextToken = "";
+      state.homeItems = [];
+      document.getElementById("home-title").textContent =
+        category === "all"
+          ? "Video thịnh hành sạch quảng cáo"
+          : `Chủ đề: ${document.querySelector(`.chip[data-category="${category}"]`)?.textContent || "Khám phá"}`;
+      document.getElementById("clear-search-results-btn").classList.add("hidden");
+      document.getElementById("category-strip").classList.remove("hidden");
+      document.getElementById("home-refresh-btn")?.classList.remove("hidden");
+      moreWrap?.classList.add("hidden");
+      renderSkeletonGrid(grid, 8);
+    } else if (moreBtn) {
+      moreBtn.disabled = true;
+      moreBtn.textContent = "Đang tải thêm...";
+    }
+
     try {
-      const data = await PureAPI.getTrending(category);
-      if (category === "all" && data.personalized) {
+      const data = await PureAPI.getTrending(category, append ? state.homeNextToken : "", refresh);
+      if (!append && category === "all" && data.personalized) {
         document.getElementById("home-title").textContent = "Đề xuất cho bạn từ YouTube (Không QC)";
       }
-      renderVideoGrid(grid, data.items || []);
+      const existingIds = new Set(state.homeItems.map((x) => x.id));
+      const freshItems = (data.items || []).filter((x) => x?.id && !existingIds.has(x.id));
+      state.homeItems.push(...freshItems);
+      state.homeNextToken = data.next_continuation || "";
+      renderVideoGrid(grid, append ? freshItems : state.homeItems, append);
+      if (moreWrap) {
+        moreWrap.classList.toggle("hidden", !state.homeNextToken);
+      }
     } catch (err) {
-      grid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1;"><h2>Không thể tải video</h2><p>${escapeHtml(err.message)}</p></div>`;
+      if (!append) {
+        grid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1;"><h2>Không thể tải video</h2><p>${escapeHtml(err.message)}</p></div>`;
+      } else if (window.showAppToast) {
+        window.showAppToast(err.message);
+      }
+    } finally {
+      if (moreBtn) {
+        moreBtn.disabled = false;
+        moreBtn.textContent = "Tải thêm video";
+      }
     }
   }
 
@@ -235,12 +299,15 @@
     const clean = (query || "").trim();
     if (!clean) return;
     state.searchQuery = clean;
+    state.homeNextToken = "";
     document.getElementById("search-suggestions").classList.add("hidden");
     switchTab("home");
 
     const grid = document.getElementById("home-video-grid");
     document.getElementById("home-title").textContent = `Kết quả cho "${clean}"`;
     document.getElementById("clear-search-results-btn").classList.remove("hidden");
+    document.getElementById("home-refresh-btn")?.classList.add("hidden");
+    document.getElementById("home-load-more-wrap")?.classList.add("hidden");
     renderSkeletonGrid(grid, 8);
 
     try {
@@ -707,18 +774,52 @@
     }
   }
 
-  async function renderShortsView() {
+  async function loadMoreShortsBatch(reset = false) {
+    if (state.shortsLoadingMore) return 0;
+    state.shortsLoadingMore = true;
+    try {
+      if (reset) {
+        state.shortsSeed = (state.shortsSeed || 0) + 1;
+      }
+      const seenExclude = Array.from(
+        new Set([...getSeenShortIds(), ...state.shortsItems.map((x) => x.id)])
+      );
+      let res = await PureAPI.getShorts(state.shortsTopic, seenExclude, ++state.shortsSeed);
+      let fresh = res?.items || [];
+      if (!fresh.length) {
+        // If user watched everything in current cache window, clear old seen memory and fetch a clean batch
+        localStorage.removeItem(SEEN_SHORTS_KEY);
+        res = await PureAPI.getShorts(state.shortsTopic, state.shortsItems.map((x) => x.id), ++state.shortsSeed);
+        fresh = res?.items || [];
+      }
+      const existing = new Set(state.shortsItems.map((x) => x.id));
+      const uniqueNew = fresh.filter((it) => it?.id && !existing.has(it.id));
+      state.shortsItems.push(...uniqueNew);
+      return uniqueNew.length;
+    } catch (_) {
+      return 0;
+    } finally {
+      state.shortsLoadingMore = false;
+    }
+  }
+
+  async function renderShortsView(forceFresh = false) {
     PurePlayer.pause();
     const sv = document.getElementById("shorts-video");
     if (!sv) return;
+    document.querySelectorAll("#shorts-topic-strip .chip").forEach((c) => {
+      c.classList.toggle("active", (c.dataset.shortsQ || "") === state.shortsTopic);
+    });
+    if (forceFresh) {
+      stopShortsPlayback();
+      state.shortsItems = [];
+      state.shortsIndex = 0;
+    }
     if (!state.shortsItems.length) {
-      document.getElementById("shorts-title").textContent = "Đang tải YouTube Shorts...";
+      document.getElementById("shorts-title").textContent = "Đang tải loạt Shorts mới...";
       document.getElementById("shorts-spinner")?.classList.remove("hidden");
-      try {
-        const res = await PureAPI.getShorts("");
-        state.shortsItems = res.items || [];
-        state.shortsIndex = 0;
-      } catch (_) {}
+      await loadMoreShortsBatch(true);
+      state.shortsIndex = 0;
     }
     if (!state.shortsItems.length) {
       document.getElementById("shorts-spinner")?.classList.add("hidden");
@@ -730,9 +831,25 @@
 
   async function playShortAtIndex(idx) {
     if (!state.shortsItems.length) return;
-    const bounded = ((idx % state.shortsItems.length) + state.shortsItems.length) % state.shortsItems.length;
-    state.shortsIndex = bounded;
-    const item = state.shortsItems[bounded];
+    if (idx < 0) {
+      window.showAppToast("Đây là Short đầu tiên.");
+      return;
+    }
+    if (idx >= state.shortsItems.length) {
+      document.getElementById("shorts-spinner")?.classList.remove("hidden");
+      const added = await loadMoreShortsBatch(false);
+      if (idx >= state.shortsItems.length && !added) {
+        idx = state.shortsItems.length - 1;
+      }
+    }
+    const item = state.shortsItems[idx];
+    if (!item) return;
+    state.shortsIndex = idx;
+    markShortSeen(item.id);
+    if (state.shortsIndex >= state.shortsItems.length - 6) {
+      loadMoreShortsBatch(false);
+    }
+
     const sv = document.getElementById("shorts-video");
     const spinner = document.getElementById("shorts-spinner");
     const titleEl = document.getElementById("shorts-title");
@@ -745,6 +862,9 @@
     chEl.textContent = item.channel || "YouTube Shorts";
     document.getElementById("shorts-like-label").textContent = "Thích";
     document.getElementById("shorts-like-btn")?.classList.remove("active");
+
+    const nextShort = state.shortsItems[idx + 1];
+    if (nextShort?.id) PureAPI.prefetchVideo(nextShort.id);
 
     try {
       const full = await PureAPI.getVideo(item.id);
@@ -766,11 +886,12 @@
         if (!state._shortsAudio) state._shortsAudio = new Audio();
         state._shortsAudio.src = PureAPI.resolveUrl(full.audio_stream_url);
         state._shortsAudio.muted = state.shortsMuted;
-        state._shortsAudio.loop = true;
+        state._shortsAudio.loop = false;
         state._shortsAudio.load();
       }
       sv.oncanplay = () => spinner?.classList.add("hidden");
       sv.onerror = () => spinner?.classList.add("hidden");
+      sv.onended = () => playShortAtIndex(state.shortsIndex + 1);
       sv.onplay = () => {
         if (!comb.has_audio && state._shortsAudio?.src) {
           state._shortsAudio.currentTime = sv.currentTime;
@@ -1967,6 +2088,13 @@
     }
     document.getElementById("shorts-prev-btn")?.addEventListener("click", () => playShortAtIndex(state.shortsIndex - 1));
     document.getElementById("shorts-next-btn")?.addEventListener("click", () => playShortAtIndex(state.shortsIndex + 1));
+    document.getElementById("shorts-refresh-btn")?.addEventListener("click", () => renderShortsView(true));
+    document.getElementById("shorts-topic-strip")?.addEventListener("click", (e) => {
+      const chip = e.target.closest("[data-shorts-q]");
+      if (!chip) return;
+      state.shortsTopic = chip.dataset.shortsQ || "";
+      renderShortsView(true);
+    });
     document.getElementById("shorts-mute-btn")?.addEventListener("click", () => {
       state.shortsMuted = !state.shortsMuted;
       const sv = document.getElementById("shorts-video");
@@ -2007,13 +2135,23 @@
       }
     });
 
-    // Category chips
+    // Category chips, Home refresh & Load more
     document.getElementById("category-strip").addEventListener("click", (e) => {
       const chip = e.target.closest(".chip");
       if (!chip) return;
       document.querySelectorAll("#category-strip .chip").forEach((c) => c.classList.remove("active"));
       chip.classList.add("active");
       loadTrending(chip.dataset.category);
+    });
+
+    document.getElementById("home-refresh-btn")?.addEventListener("click", () => {
+      loadTrending(state.category, { refresh: true });
+    });
+
+    document.getElementById("home-load-more-btn")?.addEventListener("click", () => {
+      if (state.homeNextToken) {
+        loadTrending(state.category, { append: true });
+      }
     });
 
     document.getElementById("clear-search-results-btn").addEventListener("click", () => {

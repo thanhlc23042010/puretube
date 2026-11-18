@@ -1,4 +1,4 @@
-const CACHE_NAME = "puretube-shell-v4";
+const CACHE_NAME = "puretube-shell-v5";
 const SHELL_ASSETS = [
   "/",
   "/index.html",

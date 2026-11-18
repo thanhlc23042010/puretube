@@ -840,6 +840,10 @@ const PurePlayer = {
     this.els.audio.pause();
     this.stopDubSpeech();
     this.updatePlayIcons();
+    const cur = this.getCurrentTime();
+    if (this.videoData?.id && cur >= 2) {
+      PureAPI.reportWatchProgress(this.videoData.id, cur, this.getDuration());
+    }
   },
 
   togglePlay() {
@@ -1208,6 +1212,18 @@ const PurePlayer = {
 
       if (this.onProgressCallback) {
         this.onProgressCallback(pct);
+      }
+
+      if (this.videoData?.id && current >= 3 && this.isPlaying()) {
+        const nowTs = Date.now();
+        if (this._lastReportVid !== this.videoData.id) {
+          this._lastReportVid = this.videoData.id;
+          this._lastReportAt = 0;
+        }
+        if (nowTs - (this._lastReportAt || 0) >= 25000) {
+          this._lastReportAt = nowTs;
+          PureAPI.reportWatchProgress(this.videoData.id, current, duration);
+        }
       }
     }
 
