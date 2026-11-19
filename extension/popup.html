@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>PureTube Shield</title>
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="popup-shell">
+    <header class="popup-header">
+      <div class="brand-group">
+        <svg viewBox="0 0 32 24" width="28" height="21" fill="none" aria-hidden="true">
+          <rect x="0.5" y="1" width="31" height="22" rx="6" fill="#FF0033"/>
+          <polygon points="13,7 22,12 13,17" fill="#FFFFFF"/>
+          <circle cx="27" cy="5" r="3.5" fill="#2BA640" stroke="#0F0F0F" stroke-width="1.2"/>
+        </svg>
+        <div>
+          <h1 class="brand-title">PureTube Shield</h1>
+          <div class="brand-sub">Dùng thẳng YouTube &amp; Tài khoản Google</div>
+        </div>
+      </div>
+      <span class="status-pill" id="shield-status-pill">Đang bảo vệ</span>
+    </header>
+
+    <section class="stats-grid" aria-label="Thống kê chặn quảng cáo">
+      <div class="stat-card">
+        <div class="stat-label">Quảng cáo đã chặn</div>
+        <div class="stat-value" id="stat-ads-blocked">0</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Tài trợ đã bỏ qua</div>
+        <div class="stat-value" id="stat-sponsors-skipped">0</div>
+      </div>
+      <div class="stat-wide">
+        <span>Thời gian tiết kiệm ước tính</span>
+        <strong id="stat-time-saved">0 giây</strong>
+      </div>
+    </section>
+
+    <section class="toggles-panel" aria-label="Tùy chọn bảo vệ">
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <strong>Chặn quảng cáo YouTube</strong>
+          <small>Chặn pre-roll, mid-roll, Shorts &amp; banner QC</small>
+        </span>
+        <span class="switch">
+          <input type="checkbox" id="opt-adblock" checked />
+          <span class="slider"></span>
+        </span>
+      </label>
+
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <strong>SponsorBlock tự bỏ qua tài trợ</strong>
+          <small>Nhảy qua đoạn quảng cáo do YouTuber tự đọc</small>
+        </span>
+        <span class="switch">
+          <input type="checkbox" id="opt-sponsorblock" checked />
+          <span class="slider"></span>
+        </span>
+      </label>
+
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <strong>Không tạm dừng khi chuyển tab</strong>
+          <small>Giữ luồng phát mượt khi ẩn cửa sổ / chuyển tab</small>
+        </span>
+        <span class="switch">
+          <input type="checkbox" id="opt-background" checked />
+          <span class="slider"></span>
+        </span>
+      </label>
+
+      <label class="toggle-row">
+        <span class="toggle-text">
+          <strong>Bỏ qua hộp thoại "Tiếp tục xem?"</strong>
+          <small>Tự xác nhận khi nghe nhạc / xem video dài</small>
+        </span>
+        <span class="switch">
+          <input type="checkbox" id="opt-anti-idle" checked />
+          <span class="slider"></span>
+        </span>
+      </label>
+    </section>
+
+    <footer class="popup-actions">
+      <button type="button" class="btn-primary" id="btn-open-youtube">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <polygon points="6 4 20 12 6 20 6 4" fill="currentColor" stroke="none"/>
+        </svg>
+        <span>Mở YouTube ngay</span>
+      </button>
+      <button type="button" class="btn-subtle" id="btn-reset-stats">Đặt lại thống kê</button>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

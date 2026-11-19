@@ -1,0 +1,67 @@
+html:not(.puretube-adblock-off) ytd-ad-slot-renderer,
+html:not(.puretube-adblock-off) ytd-in-feed-ad-layout-renderer,
+html:not(.puretube-adblock-off) ytd-promoted-sparkles-web-renderer,
+html:not(.puretube-adblock-off) ytd-promoted-sparkles-text-search-renderer,
+html:not(.puretube-adblock-off) ytd-display-ad-renderer,
+html:not(.puretube-adblock-off) ytd-companion-slot-renderer,
+html:not(.puretube-adblock-off) ytd-action-companion-ad-renderer,
+html:not(.puretube-adblock-off) ytd-banner-promo-renderer,
+html:not(.puretube-adblock-off) ytd-statement-banner-renderer,
+html:not(.puretube-adblock-off) ytd-mealbar-promo-renderer,
+html:not(.puretube-adblock-off) ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"],
+html:not(.puretube-adblock-off) #player-ads,
+html:not(.puretube-adblock-off) #masthead-ad,
+html:not(.puretube-adblock-off) .ytp-ad-module,
+html:not(.puretube-adblock-off) .ytp-ad-overlay-container,
+html:not(.puretube-adblock-off) .ytp-ad-player-overlay,
+html:not(.puretube-adblock-off) .ytp-ad-image-overlay,
+html:not(.puretube-adblock-off) .video-ads,
+html:not(.puretube-adblock-off) ytm-promoted-sparkles-web-renderer,
+html:not(.puretube-adblock-off) ytm-promoted-video-renderer,
+html:not(.puretube-adblock-off) ytm-companion-slot-renderer,
+html:not(.puretube-adblock-off) ad-slot-renderer {
+  display: none !important;
+}
+
+#puretube-ext-sb-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 24px;
+  z-index: 2147483645;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 40px);
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(15, 15, 15, 0.96);
+  color: #F1F1F1;
+  border: 1px solid rgba(43, 166, 64, 0.65);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.65);
+  font-family: "Roboto", system-ui, -apple-system, "Segoe UI", Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+#puretube-ext-sb-toast .pt-toast-badge {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #2BA640;
+  flex-shrink: 0;
+}
+
+#puretube-ext-sb-toast button {
+  border: none;
+  border-radius: 8px;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #FFFFFF;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#puretube-ext-sb-toast button:hover {
+  background: rgba(255, 255, 255, 0.26);
+}
