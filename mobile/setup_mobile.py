@@ -4,12 +4,13 @@ from pathlib import Path
 
 MOBILE_DIR = Path(__file__).resolve().parent
 ANDROID_MANIFEST = MOBILE_DIR / "android" / "app" / "src" / "main" / "AndroidManifest.xml"
+ANDROID_STYLES = MOBILE_DIR / "android" / "app" / "src" / "main" / "res" / "values" / "styles.xml"
 ANDROID_MAIN_ACTIVITY = MOBILE_DIR / "android" / "app" / "src" / "main" / "java" / "com" / "puretube" / "app" / "MainActivity.java"
 IOS_INFO_PLIST = MOBILE_DIR / "ios" / "App" / "App" / "Info.plist"
 
 
 def patch_android() -> None:
-    """Configure AndroidManifest and MainActivity for background audio, PiP, and fast playback."""
+    """Configure AndroidManifest, dark YouTube system bars, and MainActivity for safe areas & playback."""
     if ANDROID_MANIFEST.exists():
         xml_text = ANDROID_MANIFEST.read_text(encoding="utf-8")
         if 'android:usesCleartextTraffic="true"' not in xml_text:
@@ -32,19 +33,60 @@ def patch_android() -> None:
         ET.fromstring(xml_text)
         print("Patched AndroidManifest.xml cleanly.")
 
+    if ANDROID_STYLES.exists():
+        styles_text = ANDROID_STYLES.read_text(encoding="utf-8")
+        target_anchor = '<item name="android:background">@null</item>'
+        additions = []
+        for item_xml in (
+            '<item name="android:windowBackground">#0F0F0F</item>',
+            '<item name="android:statusBarColor">#0F0F0F</item>',
+            '<item name="android:navigationBarColor">#0F0F0F</item>',
+        ):
+            if item_xml not in styles_text:
+                additions.append(f"        {item_xml}")
+        if additions and target_anchor in styles_text:
+            styles_text = styles_text.replace(
+                target_anchor,
+                target_anchor + "\n" + "\n".join(additions),
+                1,
+            )
+            ANDROID_STYLES.write_text(styles_text, encoding="utf-8")
+        ET.fromstring(ANDROID_STYLES.read_text(encoding="utf-8"))
+        print("Patched android styles.xml cleanly.")
+
     if ANDROID_MAIN_ACTIVITY.exists():
         java_code = (
             "package com.puretube.app;\n\n"
+            "import android.graphics.Color;\n"
             "import android.os.Build;\n"
+            "import android.os.Bundle;\n"
             "import android.webkit.WebSettings;\n"
             "import android.webkit.WebView;\n"
+            "import androidx.core.view.WindowCompat;\n"
+            "import androidx.core.view.WindowInsetsControllerCompat;\n"
             "import com.getcapacitor.BridgeActivity;\n\n"
             "public class MainActivity extends BridgeActivity {\n"
+            "    @Override\n"
+            "    public void onCreate(Bundle savedInstanceState) {\n"
+            "        super.onCreate(savedInstanceState);\n"
+            "        WindowCompat.setDecorFitsSystemWindows(getWindow(), true);\n"
+            "        getWindow().setStatusBarColor(Color.parseColor(\"#0F0F0F\"));\n"
+            "        getWindow().setNavigationBarColor(Color.parseColor(\"#0F0F0F\"));\n"
+            "        WindowInsetsControllerCompat insetsCtrl = WindowCompat.getInsetsController(\n"
+            "            getWindow(),\n"
+            "            getWindow().getDecorView()\n"
+            "        );\n"
+            "        if (insetsCtrl != null) {\n"
+            "            insetsCtrl.setAppearanceLightStatusBars(false);\n"
+            "            insetsCtrl.setAppearanceLightNavigationBars(false);\n"
+            "        }\n"
+            "    }\n\n"
             "    @Override\n"
             "    public void onStart() {\n"
             "        super.onStart();\n"
             "        if (this.bridge != null && this.bridge.getWebView() != null) {\n"
             "            WebView wv = this.bridge.getWebView();\n"
+            "            wv.setBackgroundColor(Color.parseColor(\"#0F0F0F\"));\n"
             "            WebSettings settings = wv.getSettings();\n"
             "            settings.setMediaPlaybackRequiresUserGesture(false);\n"
             "            settings.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);\n"

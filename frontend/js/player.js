@@ -74,6 +74,7 @@ const PurePlayer = {
       btnPip: document.getElementById("btn-pip"),
       btnFullscreen: document.getElementById("btn-fullscreen"),
       popover: document.getElementById("player-popover"),
+      popoverBackdrop: document.getElementById("player-popover-backdrop"),
     };
 
     this.bindEvents();
@@ -293,6 +294,11 @@ const PurePlayer = {
       this.toggleFullscreen();
     });
 
+    this.els.popoverBackdrop?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      this.closePopover();
+    });
+
     this.els.btnDubbingToggle.addEventListener("click", (e) => {
       e.stopPropagation();
       this.togglePopover("dubbing");
@@ -344,6 +350,7 @@ const PurePlayer = {
         e.target.closest(".player-bottom-controls") ||
         e.target.closest(".player-top-controls") ||
         e.target.closest(".center-ctrl-btn") ||
+        e.target.closest(".ctrl-icon-pill") ||
         e.target.closest(".player-popover") ||
         e.target.closest(".sponsor-toast")
       ) {
@@ -351,7 +358,7 @@ const PurePlayer = {
       }
 
       if (!this.els.popover.classList.contains("hidden")) {
-        this.els.popover.classList.add("hidden");
+        this.closePopover();
         return;
       }
 
@@ -959,7 +966,7 @@ const PurePlayer = {
     this.stopDubSpeech();
     this.lastSpokenIdx = -1;
     this.updateDubbingUI();
-    this.els.popover.classList.add("hidden");
+    this.closePopover();
 
     if (this.shouldShowSubtitles()) {
       this.ensureDubbingLoaded();
@@ -970,7 +977,7 @@ const PurePlayer = {
 
   setAudioTrack(track) {
     if (!track || (this.currentAudioTrack && this.currentAudioTrack.id === track.id)) {
-      this.els.popover.classList.add("hidden");
+      this.closePopover();
       return;
     }
     const current = this.getCurrentTime();
@@ -983,11 +990,12 @@ const PurePlayer = {
     }
     this.updateDubbingUI();
     this.applyStreamMode(current, wasPlaying);
-    this.els.popover.classList.add("hidden");
+    this.closePopover();
   },
 
   setQuality(qualityObj) {
     if (!qualityObj || (this.currentQuality && this.currentQuality.id === qualityObj.id && !this.isAudioOnly)) {
+      this.closePopover();
       return;
     }
     const current = this.getCurrentTime();
@@ -997,7 +1005,7 @@ const PurePlayer = {
     Store.updateSetting("preferredQuality", qualityObj.height);
     this.updateQualityUI();
     this.applyStreamMode(current, wasPlaying);
-    this.els.popover.classList.add("hidden");
+    this.closePopover();
   },
 
   setSpeed(rate) {
@@ -1005,7 +1013,7 @@ const PurePlayer = {
     this.els.video.playbackRate = rate;
     this.els.audio.playbackRate = rate;
     this.els.currentSpeedLabel.textContent = `${rate}x`;
-    this.els.popover.classList.add("hidden");
+    this.closePopover();
   },
 
   toggleMute() {
@@ -1078,16 +1086,21 @@ const PurePlayer = {
     } catch (_) {}
   },
 
+  closePopover() {
+    this.els.popover?.classList.add("hidden");
+    this.els.popoverBackdrop?.classList.add("hidden");
+  },
+
   togglePopover(kind) {
     const pop = this.els.popover;
     const alreadyOpen = !pop.classList.contains("hidden") && pop.dataset.kind === kind;
     if (alreadyOpen) {
-      pop.classList.add("hidden");
+      this.closePopover();
       return;
     }
 
     pop.dataset.kind = kind;
-    pop.innerHTML = "";
+    pop.innerHTML = `<div class="sheet-handle" aria-hidden="true"></div>`;
 
     if (kind === "dubbing") {
       const title = document.createElement("div");
@@ -1172,6 +1185,7 @@ const PurePlayer = {
     }
 
     pop.classList.remove("hidden");
+    this.els.popoverBackdrop?.classList.remove("hidden");
   },
 
   handleTimeUpdate() {
@@ -1311,7 +1325,12 @@ const PurePlayer = {
   },
 
   updateQualityUI() {
-    this.els.currentQualityLabel.textContent = this.currentQuality ? this.currentQuality.label : "Auto";
+    if (!this.currentQuality) {
+      this.els.currentQualityLabel.textContent = "Auto";
+      return;
+    }
+    const h = Number(this.currentQuality.height || 0);
+    this.els.currentQualityLabel.textContent = h >= 2160 ? "4K" : h > 0 ? `${h}p` : (this.currentQuality.label || "Auto");
   },
 
   updateDubbingUI() {

@@ -182,7 +182,7 @@
     });
 
     const navTab = tabName === "watch" || tabName === "channel" ? "" : tabName;
-    document.querySelectorAll(".nav-item, .bottom-nav-item").forEach((btn) => {
+    document.querySelectorAll(".nav-item, .bottom-nav-item, .topbar-tab-btn").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.tab === navTab);
     });
 
@@ -194,7 +194,12 @@
     if (tabName === "history") renderHistoryView();
     if (tabName === "settings") renderSettingsView();
 
-    document.getElementById("view-container").scrollTop = 0;
+    const vc = document.getElementById("view-container");
+    if (vc) {
+      vc.classList.toggle("is-watch-active", tabName === "watch");
+      vc.classList.toggle("is-shorts-active", tabName === "shorts");
+      vc.scrollTop = 0;
+    }
   }
 
   function updateMiniPlayerVisibility() {
@@ -229,10 +234,18 @@
   function updateAuthButtonUI() {
     const btn = document.getElementById("open-auth-modal-btn");
     const lbl = document.getElementById("auth-btn-label");
+    const dot = document.getElementById("auth-avatar-initial");
+    const icon = document.getElementById("auth-default-icon");
     if (!btn || !lbl) return;
     const logged = Boolean(state.authStatus?.logged_in);
+    const name = state.authStatus?.account_name || "Google";
     btn.classList.toggle("signed-in", logged);
-    lbl.textContent = logged ? state.authStatus.account_name || "Google" : "Đăng nhập";
+    lbl.textContent = logged ? name : "Đăng nhập";
+    if (dot && icon) {
+      dot.textContent = name.trim().charAt(0).toUpperCase() || "G";
+      dot.classList.toggle("hidden", !logged);
+      icon.classList.toggle("hidden", logged);
+    }
   }
 
   async function refreshAuthStatus() {
@@ -271,7 +284,7 @@
     try {
       const data = await PureAPI.getTrending(category, append ? state.homeNextToken : "", refresh);
       if (!append && category === "all" && data.personalized) {
-        document.getElementById("home-title").textContent = "Đề xuất cho bạn từ YouTube (Không QC)";
+        document.getElementById("home-title").textContent = "Đề xuất cho bạn · Không QC";
       }
       const existingIds = new Set(state.homeItems.map((x) => x.id));
       const freshItems = (data.items || []).filter((x) => x?.id && !existingIds.has(x.id));
@@ -301,6 +314,7 @@
     state.searchQuery = clean;
     state.homeNextToken = "";
     document.getElementById("search-suggestions").classList.add("hidden");
+    document.getElementById("app-topbar")?.classList.remove("search-open");
     switchTab("home");
 
     const grid = document.getElementById("home-video-grid");
@@ -342,7 +356,7 @@
     document.getElementById("watch-channel-initial").textContent = (summary.channel || "P").trim().charAt(0).toUpperCase();
     const avImg = document.getElementById("watch-channel-avatar-img");
     if (avImg) {
-      avImg.src = "";
+      avImg.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 1 1'/%3E";
       avImg.classList.add("hidden");
     }
     document.getElementById("watch-channel-initial").classList.remove("hidden");
@@ -492,8 +506,16 @@
           </div>
           <div class="comment-text">${escapeHtml(c.text)}</div>
           <div class="comment-actions">
-            ${c.likes ? `<span class="comment-likes">👍 ${escapeHtml(c.likes)}</span>` : ""}
-            ${c.hearted ? `<span class="comment-heart" title="Chủ kênh đã thả tim">❤</span>` : ""}
+            ${
+              c.likes
+                ? `<span class="comment-likes"><svg class="icon" viewBox="0 0 24 24"><path d="M7 11v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3a4 4 0 0 0 4-4V5a2 2 0 0 1 2-2h.3a1.7 1.7 0 0 1 1.6 2.2L14 11h5a2 2 0 0 1 2 2.3l-1 5A2 2 0 0 1 18 20H9"/></svg><span>${escapeHtml(c.likes)}</span></span>`
+                : ""
+            }
+            ${
+              c.hearted
+                ? `<span class="comment-heart" title="Chủ kênh đã thả tim"><svg class="icon" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" fill="currentColor" stroke="none"/></svg></span>`
+                : ""
+            }
             ${
               !isReply && c.reply_token
                 ? `<button type="button" class="btn-subtle btn-xs comment-replies-btn" data-reply-token="${escapeHtml(c.reply_token)}">Xem ${escapeHtml(c.reply_count || "")} phản hồi</button>`
@@ -1364,9 +1386,9 @@
     container.innerHTML = `
       <div class="settings-group">
         <h2>Lồng tiếng Tiếng Việt & Trình phát</h2>
-        <div class="toggle-row">
+        <div class="toggle-row select-row">
           <span>Chế độ Lồng tiếng mặc định</span>
-          <select id="set-dub-mode" style="background:var(--bg-elevated);color:var(--text-primary);border:1px solid var(--border-strong);border-radius:8px;padding:6px 10px;">
+          <select id="set-dub-mode" class="settings-select">
             <option value="auto-vi" ${s.dubbingMode === "auto-vi" ? "selected" : ""}>Tự động Tiếng Việt</option>
             <option value="ai-female" ${s.dubbingMode === "ai-female" ? "selected" : ""}>AI Nữ (Hoài My)</option>
             <option value="ai-male" ${s.dubbingMode === "ai-male" ? "selected" : ""}>AI Nam (Nam Minh)</option>
@@ -1388,9 +1410,9 @@
             <span class="slider"></span>
           </span>
         </label>
-        <div class="toggle-row">
+        <div class="toggle-row select-row">
           <span>Độ phân giải ưu tiên</span>
-          <select id="set-pref-quality" style="background:var(--bg-elevated);color:var(--text-primary);border:1px solid var(--border-strong);border-radius:8px;padding:6px 10px;">
+          <select id="set-pref-quality" class="settings-select">
             <option value="2160" ${s.preferredQuality === 2160 ? "selected" : ""}>2160p (4K)</option>
             <option value="1080" ${s.preferredQuality === 1080 ? "selected" : ""}>1080p FHD</option>
             <option value="720" ${s.preferredQuality === 720 ? "selected" : ""}>720p HD (Nhanh & Tối ưu iOS)</option>
@@ -2054,6 +2076,26 @@
   }
 
   function bindGlobalEvents() {
+    document.getElementById("sidebar-toggle-btn")?.addEventListener("click", () => {
+      const shell = document.getElementById("app");
+      if (!shell) return;
+      const collapsed = shell.classList.toggle("sidebar-collapsed");
+      try {
+        localStorage.setItem("puretube_sidebar_collapsed_v1", collapsed ? "1" : "0");
+      } catch (_) {}
+    });
+
+    const topbarEl = document.getElementById("app-topbar");
+    document.getElementById("mobile-search-open-btn")?.addEventListener("click", () => {
+      topbarEl?.classList.add("search-open");
+      setTimeout(() => document.getElementById("search-input")?.focus(), 40);
+    });
+    document.getElementById("mobile-search-back-btn")?.addEventListener("click", () => {
+      topbarEl?.classList.remove("search-open");
+      document.getElementById("search-suggestions")?.classList.add("hidden");
+      document.getElementById("search-input")?.blur();
+    });
+
     document.querySelectorAll("[data-tab]").forEach((btn) => {
       btn.addEventListener("click", () => switchTab(btn.dataset.tab));
     });
@@ -2100,7 +2142,11 @@
       const sv = document.getElementById("shorts-video");
       if (sv) sv.muted = state.shortsMuted;
       if (state._shortsAudio) state._shortsAudio.muted = state.shortsMuted;
-      document.getElementById("shorts-mute-btn").textContent = state.shortsMuted ? "Đã tắt tiếng" : "Âm thanh";
+      const btn = document.getElementById("shorts-mute-btn");
+      btn?.querySelector(".icon-vol")?.classList.toggle("hidden", state.shortsMuted);
+      btn?.querySelector(".icon-muted")?.classList.toggle("hidden", !state.shortsMuted);
+      const lbl = document.getElementById("shorts-mute-label");
+      if (lbl) lbl.textContent = state.shortsMuted ? "Đã tắt tiếng" : "Âm thanh";
     });
     document.getElementById("shorts-open-full-btn")?.addEventListener("click", () => {
       const cur = state.shortsItems[state.shortsIndex];
@@ -2214,16 +2260,27 @@
       searchInput.focus();
     });
 
+    const closeDownloadMenu = () => {
+      document.getElementById("download-menu")?.classList.add("hidden");
+      document.getElementById("download-menu-backdrop")?.classList.add("hidden");
+    };
+
     document.addEventListener("click", (e) => {
       if (!e.target.closest("#search-wrapper")) {
         suggestBox.classList.add("hidden");
       }
-      if (!e.target.closest(".download-dropdown-wrap")) {
-        document.getElementById("download-menu").classList.add("hidden");
+      if (!e.target.closest("#watch-download-btn") && !e.target.closest("#download-menu")) {
+        closeDownloadMenu();
       }
     });
 
+    document.getElementById("download-menu-backdrop")?.addEventListener("click", closeDownloadMenu);
+
     document.getElementById("watch-minimize-btn").addEventListener("click", () => {
+      switchTab("home");
+    });
+    document.getElementById("watch-player-collapse-btn")?.addEventListener("click", (e) => {
+      e.stopPropagation();
       switchTab("home");
     });
 
@@ -2310,7 +2367,31 @@
 
     document.getElementById("watch-download-btn").addEventListener("click", (e) => {
       e.stopPropagation();
-      document.getElementById("download-menu").classList.toggle("hidden");
+      const menu = document.getElementById("download-menu");
+      const backdrop = document.getElementById("download-menu-backdrop");
+      if (!menu) return;
+      const isOpen = !menu.classList.contains("hidden");
+      if (isOpen) {
+        closeDownloadMenu();
+        return;
+      }
+      if (window.innerWidth > 820) {
+        const rect = e.currentTarget.getBoundingClientRect();
+        const menuW = Math.min(260, window.innerWidth - 24);
+        const left = Math.max(12, Math.min(window.innerWidth - menuW - 12, rect.right - menuW));
+        const top = Math.min(window.innerHeight - 210, rect.bottom + 8);
+        menu.style.left = `${left}px`;
+        menu.style.top = `${top}px`;
+        menu.style.right = "auto";
+        menu.style.bottom = "auto";
+      } else {
+        menu.style.left = "";
+        menu.style.top = "";
+        menu.style.right = "";
+        menu.style.bottom = "";
+      }
+      menu.classList.remove("hidden");
+      backdrop?.classList.remove("hidden");
     });
 
     PureAPI.addNativeListener("downloadProgress", (ev) => {
@@ -2324,7 +2405,7 @@
         if (!state.currentVideoFull) return;
         const mode = btn.dataset.dlMode;
         const height = parseInt(btn.dataset.dlHeight, 10) || 720;
-        document.getElementById("download-menu").classList.add("hidden");
+        closeDownloadMenu();
 
         if (PureAPI.isNativeStandalone()) {
           window.showAppToast("Đang tải tệp offline về bộ nhớ điện thoại...");
@@ -2398,6 +2479,14 @@
   }
 
   async function bootstrap() {
+    if (PureAPI.isNativeShell()) {
+      document.documentElement.classList.add("is-native-app");
+    }
+    try {
+      if (localStorage.getItem("puretube_sidebar_collapsed_v1") === "1") {
+        document.getElementById("app")?.classList.add("sidebar-collapsed");
+      }
+    } catch (_) {}
     registerServiceWorker();
     PurePlayer.init({
       onEnded: () => {
