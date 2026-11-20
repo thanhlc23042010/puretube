@@ -1143,7 +1143,7 @@
 
   function mountBrowseReloadControl() {
     if (typeof document === "undefined" || !document.body) return;
-    if (getPtRole() !== "browse") {
+    if (getPtRole() === "player") {
       var oldBar = document.getElementById("puretube-fallback-bar");
       if (oldBar && oldBar.parentNode) oldBar.parentNode.removeChild(oldBar);
       return;

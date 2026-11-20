@@ -797,13 +797,18 @@ public class MainActivity extends AppCompatActivity {
         String action = mediaIsPlaying ? "pause" : "play";
         mediaIsPlaying = !mediaIsPlaying;
         updateMiniPlayPauseIcon();
-        dispatchMediaControlToPlayer(action);
+        dispatchMediaControlToWebView(playerWebView, action);
     }
 
-    private void dispatchMediaControlToPlayer(String action) {
-        if (playerWebView == null || TextUtils.isEmpty(action)) return;
+    private void dispatchMediaControlToActiveWebView(String action) {
+        BackgroundWebView target = (playerState != PlayerState.HIDDEN) ? playerWebView : browseWebView;
+        dispatchMediaControlToWebView(target, action);
+    }
+
+    private void dispatchMediaControlToWebView(BackgroundWebView target, String action) {
+        if (target == null || TextUtils.isEmpty(action)) return;
         String safeAction = action.replace("'", "");
-        mainHandler.post(() -> playerWebView.evaluateJavascript(
+        mainHandler.post(() -> target.evaluateJavascript(
                 "window.__puretubeMediaControl && window.__puretubeMediaControl('" + safeAction + "');",
                 null
         ));
@@ -861,7 +866,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void setupMediaServiceListener() {
-        PureTubeMediaService.actionListener = action -> mainHandler.post(() -> dispatchMediaControlToPlayer(action));
+        PureTubeMediaService.actionListener = action -> mainHandler.post(() -> dispatchMediaControlToActiveWebView(action));
     }
 
     private void updateMediaService(String title, String artist, boolean playing) {
@@ -1196,8 +1201,10 @@ public class MainActivity extends AppCompatActivity {
 
         @JavascriptInterface
         public void onMediaProgress(int permille) {
+            if (!"player".equals(role)) return;
             final int clamped = Math.max(0, Math.min(1000, permille));
             mainHandler.post(() -> {
+                if (playerState == PlayerState.HIDDEN) return;
                 currentProgressPermille = clamped;
                 if (playerState == PlayerState.MINI) {
                     updateProgressBarWidth();
@@ -1208,12 +1215,19 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onMediaState(String title, String artist, boolean playing) {
             mainHandler.post(() -> {
-                if (!TextUtils.isEmpty(title)) currentTitle = title;
-                if (!TextUtils.isEmpty(artist)) currentArtist = artist;
-                mediaIsPlaying = playing;
-                updateTitleViews();
-                if (playing || playerState != PlayerState.HIDDEN) {
+                if ("player".equals(role)) {
+                    if (playerState == PlayerState.HIDDEN) return;
+                    if (!TextUtils.isEmpty(title)) currentTitle = title;
+                    if (!TextUtils.isEmpty(artist)) currentArtist = artist;
+                    mediaIsPlaying = playing;
+                    updateTitleViews();
                     updateMediaService(currentTitle, currentArtist, playing);
+                } else {
+                    if (playerState == PlayerState.HIDDEN && playing) {
+                        String browseTitle = !TextUtils.isEmpty(title) ? title : "PureTube";
+                        String browseArtist = !TextUtils.isEmpty(artist) ? artist : "YouTube";
+                        updateMediaService(browseTitle, browseArtist, true);
+                    }
                 }
             });
         }
