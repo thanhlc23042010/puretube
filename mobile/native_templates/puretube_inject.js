@@ -493,12 +493,58 @@
     } catch (_) {}
   }
 
+  var ptUserWantsPlaying = false;
+  var ptAllowPauseUntil = 0;
+  var ptProtectPlayUntil = 0;
+  var ptAutoResumeCount = 0;
+  var ptPlayerActiveInOtherWebView = false;
+  var origMediaPlay = null;
+  var origMediaPause = null;
+  var mediaProtectorInstalled = false;
+
+  function resumePrimaryOrPlayer(mp, v) {
+    try {
+      if (mp && typeof mp.playVideo === "function") {
+        mp.playVideo();
+      }
+    } catch (_) {}
+    if (v && v.paused) {
+      try {
+        var ret = origMediaPlay ? origMediaPlay.call(v) : v.play();
+        if (ret && typeof ret.catch === "function") {
+          ret.catch(function () {});
+        }
+      } catch (_) {}
+    }
+  }
+
   window.__puretubeMediaControl = function (action) {
+    var mp =
+      typeof document !== "undefined"
+        ? document.getElementById("movie_player") || document.querySelector(".html5-video-player")
+        : null;
     var v = findPrimaryVideo();
     if (action === "play") {
-      if (v) v.play().catch(function () {});
+      ptUserWantsPlaying = true;
+      ptAllowPauseUntil = 0;
+      ptProtectPlayUntil = Date.now() + 2500;
+      ptAutoResumeCount = 0;
+      resumePrimaryOrPlayer(mp, v);
     } else if (action === "pause") {
-      if (v) v.pause();
+      ptUserWantsPlaying = false;
+      ptAllowPauseUntil = Date.now() + 1500;
+      ptProtectPlayUntil = 0;
+      try {
+        if (mp && typeof mp.pauseVideo === "function") {
+          mp.pauseVideo();
+        }
+      } catch (_) {}
+      if (v) {
+        try {
+          if (origMediaPause) origMediaPause.call(v);
+          else v.pause();
+        } catch (_) {}
+      }
     } else if (action === "next") {
       var nextBtn = document.querySelector(
         ".player-controls-content [aria-label*='Tiếp' i], .player-controls-content [aria-label*='Next' i], .ytp-next-button"
@@ -522,10 +568,52 @@
   function bindVideoListeners(v) {
     if (!v || boundVideo === v) return;
     boundVideo = v;
-    ["play", "pause", "loadedmetadata", "ended"].forEach(function (ev) {
+    v.addEventListener("playing", function () {
+      if (getPtRole() === "player") {
+        ptUserWantsPlaying = true;
+      }
+      emitMediaState(false);
+    });
+    ["play", "loadedmetadata", "ended"].forEach(function (ev) {
       v.addEventListener(ev, function () {
+        if (ev === "play" && getPtRole() === "player") {
+          ptUserWantsPlaying = true;
+        }
+        if (ev === "ended") {
+          ptUserWantsPlaying = false;
+        }
         emitMediaState(false);
       });
+    });
+    v.addEventListener("pause", function () {
+      if (
+        getPtRole() === "player" &&
+        isMiniModeState &&
+        ptUserWantsPlaying &&
+        Date.now() < ptProtectPlayUntil &&
+        ptAutoResumeCount < 3 &&
+        !v.ended
+      ) {
+        ptAutoResumeCount += 1;
+        setTimeout(function () {
+          if (
+            getPtRole() === "player" &&
+            isMiniModeState &&
+            ptUserWantsPlaying &&
+            Date.now() < ptProtectPlayUntil &&
+            !v.ended
+          ) {
+            var mp =
+              typeof document !== "undefined"
+                ? document.getElementById("movie_player") || document.querySelector(".html5-video-player")
+                : null;
+            resumePrimaryOrPlayer(mp, v);
+          }
+        }, 60);
+      } else if (getPtRole() === "player" && !isMiniModeState) {
+        ptUserWantsPlaying = false;
+      }
+      emitMediaState(false);
     });
   }
 
@@ -861,6 +949,11 @@
     } else {
       root.classList.remove("pt-mini-mode");
     }
+    if (role === "browse" && ptPlayerActiveInOtherWebView) {
+      root.classList.add("pt-browse-preview-off");
+    } else {
+      root.classList.remove("pt-browse-preview-off");
+    }
   }
 
   function ensureDualStyles() {
@@ -918,6 +1011,12 @@
       "  top: 0 !important;",
       "  margin-top: 0 !important;",
       "}",
+      "html.pt-browse-preview-off .inline-player-controls,",
+      "html.pt-browse-preview-off .ytm-inline-preview-controls,",
+      "html.pt-browse-preview-off ytm-video-preview video {",
+      "  opacity: 0 !important;",
+      "  pointer-events: none !important;",
+      "}",
       "html.pt-mini-mode,",
       "html.pt-mini-mode body {",
       "  overflow: hidden !important;",
@@ -930,7 +1029,11 @@
       "  min-height: 0 !important;",
       "}",
       "html.pt-mini-mode ytm-app,",
-      "html.pt-mini-mode #app,",
+      "html.pt-mini-mode #app {",
+      "  visibility: hidden !important;",
+      "  opacity: 0 !important;",
+      "  pointer-events: none !important;",
+      "}",
       "html.pt-mini-mode ytm-header,",
       "html.pt-mini-mode #header,",
       "html.pt-mini-mode ytm-mobile-topbar-renderer,",
@@ -1124,6 +1227,13 @@
       } catch (_) {
         savedPlayerScrollY = 0;
       }
+      var curV = findPrimaryVideo();
+      if (curV && !curV.paused && !curV.ended) {
+        ptUserWantsPlaying = true;
+        ptAllowPauseUntil = 0;
+        ptProtectPlayUntil = Date.now() + 2500;
+        ptAutoResumeCount = 0;
+      }
     }
     isMiniModeState = nextMini;
     ensureDualStyles();
@@ -1274,15 +1384,83 @@
     } catch (_) {}
   }
 
+  function setPlayerActive(active) {
+    ptPlayerActiveInOtherWebView = Boolean(active);
+    applyRoleAndMiniClasses();
+    if (ptPlayerActiveInOtherWebView && getPtRole() === "browse") {
+      pauseNonShortsBrowseVideos();
+    }
+    return ptPlayerActiveInOtherWebView;
+  }
+
+  function installMediaPlaybackProtector() {
+    if (mediaProtectorInstalled) return;
+    mediaProtectorInstalled = true;
+
+    try {
+      if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+        var markTrustedInteraction = function (ev) {
+          if (ev && ev.isTrusted && getPtRole() === "player" && !isMiniModeState) {
+            ptAllowPauseUntil = Date.now() + 900;
+          }
+        };
+        window.addEventListener("pointerdown", markTrustedInteraction, true);
+        window.addEventListener("touchstart", markTrustedInteraction, true);
+      }
+    } catch (_) {}
+
+    try {
+      if (typeof HTMLMediaElement !== "undefined" && HTMLMediaElement && HTMLMediaElement.prototype) {
+        if (typeof HTMLMediaElement.prototype.play === "function") {
+          origMediaPlay = HTMLMediaElement.prototype.play;
+          HTMLMediaElement.prototype.play = function () {
+            if (getPtRole() === "browse" && ptPlayerActiveInOtherWebView) {
+              var onShortsPage = Boolean(extractShortsUrl(typeof window !== "undefined" && window.location ? window.location.href : ""));
+              var inShortsNode = typeof this.closest === "function" && Boolean(this.closest("ytm-shorts, ytm-reel-video-renderer"));
+              if (!onShortsPage && !inShortsNode) {
+                try {
+                  this.muted = true;
+                  if (origMediaPause) origMediaPause.call(this);
+                } catch (_) {}
+                return Promise.resolve();
+              }
+            } else if (getPtRole() === "player") {
+              ptUserWantsPlaying = true;
+              ptAllowPauseUntil = 0;
+            }
+            return origMediaPlay.apply(this, arguments);
+          };
+        }
+        if (typeof HTMLMediaElement.prototype.pause === "function") {
+          origMediaPause = HTMLMediaElement.prototype.pause;
+          HTMLMediaElement.prototype.pause = function () {
+            if (
+              getPtRole() === "player" &&
+              isMiniModeState &&
+              ptUserWantsPlaying &&
+              Date.now() > ptAllowPauseUntil &&
+              !this.ended
+            ) {
+              return;
+            }
+            return origMediaPause.apply(this, arguments);
+          };
+        }
+      }
+    } catch (_) {}
+  }
+
   function installDualWebViewBridge() {
     if (typeof window === "undefined") return;
     window.__puretubeSetMiniMode = setMiniMode;
+    window.__puretubeSetPlayerActive = setPlayerActive;
 
     var exportedApi = {
       extractWatchUrl: extractWatchUrl,
       extractBrowseUrlFromPlayer: extractBrowseUrlFromPlayer,
       extractWatchMeta: extractWatchMeta,
       setMiniMode: setMiniMode,
+      setPlayerActive: setPlayerActive,
       getRole: getPtRole,
       pruneYouTubeAds: typeof pruneYouTubeAds === "function" ? pruneYouTubeAds : function (payload) { return payload; },
       isYouTubeApiUrl: typeof isYouTubeApiUrl === "function" ? isYouTubeApiUrl : ptIsYouTubeApiUrl
@@ -1293,6 +1471,7 @@
     if (dualHooksInstalled) return;
     dualHooksInstalled = true;
 
+    installMediaPlaybackProtector();
     applyRoleAndMiniClasses();
     ensureDualStyles();
     trackBrowseNonWatchUrl();
@@ -1427,6 +1606,9 @@
       ensureDualStyles();
       mountShieldButton();
       cleanupBrowseBleedThrough();
+      if (getPtRole() === "browse" && ptPlayerActiveInOtherWebView) {
+        pauseNonShortsBrowseVideos();
+      }
       var v = findPrimaryVideo();
       if (v) bindVideoListeners(v);
       runAdSkipTick();

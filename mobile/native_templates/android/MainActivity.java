@@ -78,6 +78,8 @@ public class MainActivity extends AppCompatActivity {
 
     private static final int MINI_WIDTH_DP = 112;
     private static final int MINI_HEIGHT_DP = 63;
+    private static final int MINI_RENDER_WIDTH_DP = 256;
+    private static final int MINI_RENDER_HEIGHT_DP = 144;
     private static final int MINI_BOTTOM_MARGIN_DP = 54;
 
     private enum PlayerState {
@@ -518,6 +520,8 @@ public class MainActivity extends AppCompatActivity {
         if (playerState != PlayerState.EXPANDED) return;
         float clamped = Math.max(0f, dyPx);
         playerWebView.setTranslationY(clamped);
+        playerWebView.setPivotX(playerWebView.getWidth() / 2f);
+        playerWebView.setPivotY(0f);
         float progress = Math.min(1f, clamped / dpToPx(280));
         float scale = 1f - 0.08f * progress;
         playerWebView.setScaleX(scale);
@@ -650,6 +654,7 @@ public class MainActivity extends AppCompatActivity {
                 if (isBrowse) {
                     browseInShorts = isShortsUrl(url);
                     stopBrowseRefreshIndicator();
+                    syncPlayerActiveToBrowse(playerState != PlayerState.HIDDEN);
                 } else {
                     syncMiniModeCssToPlayer(playerState == PlayerState.MINI);
                 }
@@ -782,10 +787,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void applyPlayerState(PlayerState nextState) {
         playerState = nextState;
+        syncPlayerActiveToBrowse(nextState != PlayerState.HIDDEN);
         if (playerWebView == null) return;
 
         playerWebView.setTranslationX(0f);
         playerWebView.setTranslationY(0f);
+        playerWebView.setPivotX(0f);
+        playerWebView.setPivotY(0f);
         playerWebView.setScaleX(1f);
         playerWebView.setScaleY(1f);
         playerWebView.setAlpha(1f);
@@ -828,11 +836,20 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        // PlayerState.MINI
-        FrameLayout.LayoutParams miniLp = new FrameLayout.LayoutParams(dpToPx(MINI_WIDTH_DP), dpToPx(MINI_HEIGHT_DP));
+        // PlayerState.MINI: render internal viewport at 256dp x 144dp (> 200x112 YouTube threshold)
+        // and GPU-scale down from bottom-left pivot to exact 112dp x 63dp on screen.
+        int rawW = dpToPx(MINI_RENDER_WIDTH_DP);
+        int rawH = dpToPx(MINI_RENDER_HEIGHT_DP);
+        FrameLayout.LayoutParams miniLp = new FrameLayout.LayoutParams(rawW, rawH);
         miniLp.gravity = Gravity.BOTTOM | Gravity.START;
         miniLp.bottomMargin = dpToPx(MINI_BOTTOM_MARGIN_DP);
         playerWebView.setLayoutParams(miniLp);
+        float scaleX = (float) dpToPx(MINI_WIDTH_DP) / (float) rawW;
+        float scaleY = (float) dpToPx(MINI_HEIGHT_DP) / (float) rawH;
+        playerWebView.setPivotX(0f);
+        playerWebView.setPivotY(rawH);
+        playerWebView.setScaleX(scaleX);
+        playerWebView.setScaleY(scaleY);
         playerWebView.setElevation(dpToPx(12));
         playerWebView.setVisibility(View.VISIBLE);
         playerWebView.requestLayout();
@@ -853,7 +870,7 @@ public class MainActivity extends AppCompatActivity {
             playerWebView.setVisibility(View.VISIBLE);
             playerWebView.setAlpha(0f);
             playerWebView.setTranslationX(0f);
-            playerWebView.setTranslationY(dpToPx(240));
+            playerWebView.setTranslationY(dpToPx(300));
         } else {
             miniBarChrome.setTranslationX(0f);
             miniBarChrome.setTranslationY(0f);
@@ -867,6 +884,14 @@ public class MainActivity extends AppCompatActivity {
             playerWebView.setTranslationX(0f);
             playerWebView.setTranslationY(0f);
         }
+    }
+
+    private void syncPlayerActiveToBrowse(boolean active) {
+        if (browseWebView == null) return;
+        browseWebView.evaluateJavascript(
+                "window.__puretubeSetPlayerActive && window.__puretubeSetPlayerActive(" + (active ? "true" : "false") + ");",
+                null
+        );
     }
 
     private void syncMiniModeCssToPlayer(boolean isMini) {
@@ -1363,6 +1388,13 @@ public class MainActivity extends AppCompatActivity {
         @JavascriptInterface
         public void onBrowseShorts() {
             browseInShorts = true;
+            mainHandler.post(() -> {
+                if (playerState == PlayerState.MINI && mediaIsPlaying) {
+                    mediaIsPlaying = false;
+                    updateMiniPlayPauseIcon();
+                    dispatchMediaControlToWebView(playerWebView, "pause");
+                }
+            });
         }
 
         @JavascriptInterface
