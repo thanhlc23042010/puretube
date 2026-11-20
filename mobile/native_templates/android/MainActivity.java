@@ -7,13 +7,22 @@ import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.ColorFilter;
+import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.PixelFormat;
+import android.graphics.Rect;
+import android.graphics.Typeface;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.text.TextUtils;
 import android.util.Rational;
 import android.view.Gravity;
@@ -30,12 +39,14 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.OnBackPressedCallback;
 import androidx.annotation.NonNull;
+import androidx.annotation.Nullable;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -65,6 +76,10 @@ public class MainActivity extends AppCompatActivity {
             "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
                     + "(KHTML, like Gecko) Chrome/126.0.6478.122 Mobile Safari/537.36";
 
+    private static final int MINI_WIDTH_DP = 112;
+    private static final int MINI_HEIGHT_DP = 63;
+    private static final int MINI_BOTTOM_MARGIN_DP = 54;
+
     private enum PlayerState {
         HIDDEN,
         EXPANDED,
@@ -76,14 +91,14 @@ public class MainActivity extends AppCompatActivity {
     private BackgroundWebView browseWebView;
     private BackgroundWebView playerWebView;
     private View playerBackdrop;
-    private LinearLayout playerTopBar;
-    private TextView playerTopTitle;
+    private ImageView playerMinimizeBtn;
     private LinearLayout miniBarChrome;
     private View miniProgressTrack;
     private View miniProgressView;
     private TextView miniTitleView;
     private TextView miniArtistView;
-    private TextView miniPlayPauseBtn;
+    private ImageView miniPlayPauseBtn;
+    private VectorIconDrawable playPauseIconDrawable;
     private View miniVideoTouchShield;
     private FrameLayout fullscreenContainer;
 
@@ -106,12 +121,9 @@ public class MainActivity extends AppCompatActivity {
     private String currentTitle = "PureTube";
     private String currentArtist = "YouTube";
     private long lastBackPressMs = 0L;
+    private long lastBrowseWatchBounceMs = 0L;
     private boolean inPipMode = false;
-
-    private float topBarDownRawY = 0f;
-    private float topBarDownRawX = 0f;
-    private float topBarLastDy = 0f;
-    private boolean topBarDragging = false;
+    private boolean imeVisible = false;
     private float touchSlopPx = 18f;
 
     @SuppressLint({"SetJavaScriptEnabled", "ClickableViewAccessibility"})
@@ -219,6 +231,11 @@ public class MainActivity extends AppCompatActivity {
                 Insets bars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
                 v.setPadding(bars.left, bars.top, bars.right, bars.bottom);
             }
+            boolean nextIme = insets.isVisible(WindowInsetsCompat.Type.ime());
+            if (nextIme != imeVisible) {
+                imeVisible = nextIme;
+                syncMiniVisibilityForIme();
+            }
             return insets;
         });
 
@@ -265,7 +282,6 @@ public class MainActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         );
-        playerParams.topMargin = dpToPx(44);
         playerWebView.setVisibility(View.GONE);
         rootFrame.addView(playerWebView, playerParams);
 
@@ -273,45 +289,68 @@ public class MainActivity extends AppCompatActivity {
         miniVideoTouchShield.setBackgroundColor(Color.TRANSPARENT);
         miniVideoTouchShield.setClickable(true);
         miniVideoTouchShield.setVisibility(View.GONE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            miniVideoTouchShield.setElevation(dpToPx(12));
-        }
-        miniVideoTouchShield.setOnClickListener(v -> expandPlayer());
-        FrameLayout.LayoutParams shieldParams = new FrameLayout.LayoutParams(dpToPx(106), dpToPx(60));
+        miniVideoTouchShield.setElevation(dpToPx(14));
+        attachMiniBarSwipeTouch(miniVideoTouchShield, this::expandPlayer);
+        FrameLayout.LayoutParams shieldParams = new FrameLayout.LayoutParams(
+                dpToPx(MINI_WIDTH_DP),
+                dpToPx(MINI_HEIGHT_DP)
+        );
         shieldParams.gravity = Gravity.BOTTOM | Gravity.START;
-        shieldParams.bottomMargin = dpToPx(54);
+        shieldParams.bottomMargin = dpToPx(MINI_BOTTOM_MARGIN_DP);
         rootFrame.addView(miniVideoTouchShield, shieldParams);
 
-        playerTopBar = buildPlayerTopBar();
-        rootFrame.addView(playerTopBar);
+        playerMinimizeBtn = buildOverlayMinimizeButton();
+        rootFrame.addView(playerMinimizeBtn);
 
         fullscreenContainer = new FrameLayout(this);
         fullscreenContainer.setBackgroundColor(Color.BLACK);
         fullscreenContainer.setVisibility(View.GONE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            fullscreenContainer.setElevation(dpToPx(24));
-        }
+        fullscreenContainer.setElevation(dpToPx(24));
         rootFrame.addView(fullscreenContainer, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
     }
 
+    private ImageView buildOverlayMinimizeButton() {
+        ImageView btn = new ImageView(this);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setShape(GradientDrawable.OVAL);
+        bg.setColor(Color.argb(107, 0, 0, 0));
+        btn.setBackground(bg);
+        btn.setImageDrawable(new VectorIconDrawable(
+                VectorIconDrawable.ICON_CHEVRON_DOWN,
+                Color.WHITE,
+                getResources().getDisplayMetrics().density
+        ));
+        btn.setScaleType(ImageView.ScaleType.CENTER);
+        btn.setContentDescription("Thu nhỏ trình phát");
+        btn.setVisibility(View.GONE);
+        btn.setClickable(true);
+        btn.setFocusable(true);
+        btn.setElevation(dpToPx(12));
+        btn.setOnClickListener(v -> minimizePlayer());
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(dpToPx(36), dpToPx(36));
+        lp.gravity = Gravity.TOP | Gravity.START;
+        lp.leftMargin = dpToPx(8);
+        lp.topMargin = dpToPx(8);
+        btn.setLayoutParams(lp);
+        return btn;
+    }
+
     private LinearLayout buildMiniBarChrome() {
         LinearLayout container = new LinearLayout(this);
         container.setOrientation(LinearLayout.VERTICAL);
-        container.setBackgroundColor(Color.parseColor("#1D1D1D"));
+        container.setBackgroundColor(Color.parseColor("#1F1F1F"));
         container.setClickable(true);
         container.setVisibility(View.GONE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            container.setElevation(dpToPx(8));
-        }
+        container.setElevation(dpToPx(10));
         FrameLayout.LayoutParams containerParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(60)
+                dpToPx(MINI_HEIGHT_DP)
         );
         containerParams.gravity = Gravity.BOTTOM;
-        containerParams.bottomMargin = dpToPx(54);
+        containerParams.bottomMargin = dpToPx(MINI_BOTTOM_MARGIN_DP);
         container.setLayoutParams(containerParams);
 
         FrameLayout track = new FrameLayout(this);
@@ -325,26 +364,28 @@ public class MainActivity extends AppCompatActivity {
                 dpToPx(2)
         ));
 
+        int rowHeightPx = dpToPx(MINI_HEIGHT_DP - 2);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         container.addView(row, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(58)
+                rowHeightPx
         ));
 
         View videoSpacer = new View(this);
-        row.addView(videoSpacer, new LinearLayout.LayoutParams(dpToPx(106), ViewGroup.LayoutParams.MATCH_PARENT));
+        row.addView(videoSpacer, new LinearLayout.LayoutParams(dpToPx(MINI_WIDTH_DP), ViewGroup.LayoutParams.MATCH_PARENT));
 
         LinearLayout textCol = new LinearLayout(this);
         textCol.setOrientation(LinearLayout.VERTICAL);
         textCol.setGravity(Gravity.CENTER_VERTICAL);
-        textCol.setPadding(dpToPx(10), dpToPx(6), dpToPx(6), dpToPx(6));
-        textCol.setOnClickListener(v -> expandPlayer());
+        textCol.setPadding(dpToPx(10), dpToPx(4), dpToPx(6), dpToPx(4));
+        attachMiniBarSwipeTouch(textCol, this::expandPlayer);
 
         miniTitleView = new TextView(this);
         miniTitleView.setTextColor(Color.WHITE);
         miniTitleView.setTextSize(13f);
+        miniTitleView.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         miniTitleView.setSingleLine(true);
         miniTitleView.setEllipsize(TextUtils.TruncateAt.END);
         miniTitleView.setText(currentTitle);
@@ -360,13 +401,29 @@ public class MainActivity extends AppCompatActivity {
         textCol.addView(miniArtistView);
         row.addView(textCol, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        miniPlayPauseBtn = createBarButton("\u25b6", 16f, Color.WHITE, dpToPx(44), dpToPx(58));
+        float density = getResources().getDisplayMetrics().density;
+        playPauseIconDrawable = new VectorIconDrawable(VectorIconDrawable.ICON_PLAY, Color.WHITE, density);
+        miniPlayPauseBtn = new ImageView(this);
+        miniPlayPauseBtn.setImageDrawable(playPauseIconDrawable);
+        miniPlayPauseBtn.setScaleType(ImageView.ScaleType.CENTER);
         miniPlayPauseBtn.setContentDescription("Phát / Tạm dừng");
+        miniPlayPauseBtn.setClickable(true);
+        miniPlayPauseBtn.setFocusable(true);
+        miniPlayPauseBtn.setLayoutParams(new LinearLayout.LayoutParams(dpToPx(44), rowHeightPx));
         miniPlayPauseBtn.setOnClickListener(v -> toggleMiniPlayPause());
         row.addView(miniPlayPauseBtn);
 
-        TextView closeBtn = createBarButton("\u2715", 15f, Color.parseColor("#CCCCCC"), dpToPx(44), dpToPx(58));
+        ImageView closeBtn = new ImageView(this);
+        closeBtn.setImageDrawable(new VectorIconDrawable(
+                VectorIconDrawable.ICON_CLOSE,
+                Color.parseColor("#CCCCCC"),
+                density
+        ));
+        closeBtn.setScaleType(ImageView.ScaleType.CENTER);
         closeBtn.setContentDescription("Đóng trình phát");
+        closeBtn.setClickable(true);
+        closeBtn.setFocusable(true);
+        closeBtn.setLayoutParams(new LinearLayout.LayoutParams(dpToPx(44), rowHeightPx));
         closeBtn.setOnClickListener(v -> closePlayer());
         row.addView(closeBtn);
 
@@ -374,138 +431,114 @@ public class MainActivity extends AppCompatActivity {
     }
 
     @SuppressLint("ClickableViewAccessibility")
-    private LinearLayout buildPlayerTopBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setBackgroundColor(Color.parseColor("#0F0F0F"));
-        bar.setVisibility(View.GONE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            bar.setElevation(dpToPx(8));
-        }
-        FrameLayout.LayoutParams barParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(44)
-        );
-        barParams.gravity = Gravity.TOP;
-        bar.setLayoutParams(barParams);
+    private void attachMiniBarSwipeTouch(View target, Runnable onTap) {
+        target.setOnTouchListener(new View.OnTouchListener() {
+            private float downRawX;
+            private float downRawY;
+            private float lastDx;
+            private float lastDy;
+            private int dragAxis; // 0 = undecided, 1 = vertical, 2 = horizontal
 
-        TextView minBtn = createBarButton("\u2304", 20f, Color.WHITE, dpToPx(44), dpToPx(44));
-        minBtn.setContentDescription("Thu nhỏ trình phát");
-        minBtn.setOnClickListener(v -> minimizePlayer());
-        bar.addView(minBtn);
-
-        playerTopTitle = new TextView(this);
-        playerTopTitle.setTextColor(Color.WHITE);
-        playerTopTitle.setTextSize(14f);
-        playerTopTitle.setSingleLine(true);
-        playerTopTitle.setEllipsize(TextUtils.TruncateAt.END);
-        playerTopTitle.setPadding(dpToPx(4), 0, dpToPx(8), 0);
-        playerTopTitle.setText(currentTitle);
-        playerTopTitle.setOnTouchListener((v, ev) -> handleTopBarDragTouch(ev));
-        bar.addView(playerTopTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        playerTopTitle.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView reloadBtn = createBarButton("\u21bb", 18f, Color.WHITE, dpToPx(40), dpToPx(44));
-        reloadBtn.setContentDescription("Tải lại video");
-        reloadBtn.setOnClickListener(v -> {
-            if (playerWebView != null) {
-                playerWebView.reload();
+            @Override
+            public boolean onTouch(View v, MotionEvent ev) {
+                if (playerState != PlayerState.MINI || ev == null) return false;
+                int action = ev.getActionMasked();
+                if (action == MotionEvent.ACTION_DOWN) {
+                    downRawX = ev.getRawX();
+                    downRawY = ev.getRawY();
+                    lastDx = 0f;
+                    lastDy = 0f;
+                    dragAxis = 0;
+                    return true;
+                } else if (action == MotionEvent.ACTION_MOVE) {
+                    lastDx = ev.getRawX() - downRawX;
+                    lastDy = ev.getRawY() - downRawY;
+                    if (dragAxis == 0) {
+                        if (Math.abs(lastDy) > touchSlopPx && Math.abs(lastDy) >= Math.abs(lastDx)) {
+                            dragAxis = 1;
+                        } else if (Math.abs(lastDx) > touchSlopPx && Math.abs(lastDx) > Math.abs(lastDy)) {
+                            dragAxis = 2;
+                        }
+                    }
+                    if (dragAxis == 1) {
+                        float alpha = lastDy > 0f ? Math.max(0.25f, 1f - lastDy / dpToPx(80)) : 1f;
+                        translateMiniCluster(0f, lastDy, alpha);
+                    } else if (dragAxis == 2) {
+                        float alpha = Math.max(0.2f, 1f - Math.abs(lastDx) / dpToPx(150));
+                        translateMiniCluster(lastDx, 0f, alpha);
+                    }
+                    return true;
+                } else if (action == MotionEvent.ACTION_UP) {
+                    if (dragAxis == 0) {
+                        onTap.run();
+                        return true;
+                    }
+                    if (dragAxis == 1 && lastDy < -dpToPx(36)) {
+                        translateMiniCluster(0f, 0f, 1f);
+                        expandPlayer();
+                        return true;
+                    }
+                    if ((dragAxis == 1 && lastDy > dpToPx(40))
+                            || (dragAxis == 2 && Math.abs(lastDx) > dpToPx(88))) {
+                        translateMiniCluster(0f, 0f, 1f);
+                        closePlayer();
+                        return true;
+                    }
+                    snapBackMiniCluster();
+                    return true;
+                } else if (action == MotionEvent.ACTION_CANCEL) {
+                    snapBackMiniCluster();
+                    return true;
+                }
+                return false;
             }
         });
-        bar.addView(reloadBtn);
-
-        TextView pipBtn = createBarButton("PiP", 11f, Color.parseColor("#E0E0E0"), dpToPx(42), dpToPx(28));
-        GradientDrawable pipBg = new GradientDrawable();
-        pipBg.setColor(Color.parseColor("#242424"));
-        pipBg.setCornerRadius(dpToPx(14));
-        pipBg.setStroke(dpToPx(1), Color.parseColor("#44FFFFFF"));
-        pipBtn.setBackground(pipBg);
-        pipBtn.setContentDescription("Hình trong hình");
-        pipBtn.setOnClickListener(v -> enterPictureInPictureSafe());
-        LinearLayout.LayoutParams pipLp = new LinearLayout.LayoutParams(dpToPx(42), dpToPx(28));
-        pipLp.setMargins(dpToPx(2), 0, dpToPx(2), 0);
-        bar.addView(pipBtn, pipLp);
-
-        TextView closeBtn = createBarButton("\u2715", 16f, Color.parseColor("#CCCCCC"), dpToPx(40), dpToPx(44));
-        closeBtn.setContentDescription("Đóng video");
-        closeBtn.setOnClickListener(v -> closePlayer());
-        bar.addView(closeBtn);
-
-        return bar;
     }
 
-    private TextView createBarButton(String label, float textSizeSp, int textColor, int widthPx, int heightPx) {
-        TextView btn = new TextView(this);
-        btn.setText(label);
-        btn.setTextSize(textSizeSp);
-        btn.setTextColor(textColor);
-        btn.setGravity(Gravity.CENTER);
-        btn.setClickable(true);
-        btn.setFocusable(true);
-        btn.setLayoutParams(new LinearLayout.LayoutParams(widthPx, heightPx));
-        return btn;
+    private void translateMiniCluster(float tx, float ty, float alpha) {
+        if (imeVisible) return;
+        miniBarChrome.setTranslationX(tx);
+        miniBarChrome.setTranslationY(ty);
+        miniBarChrome.setAlpha(alpha);
+        playerWebView.setTranslationX(tx);
+        playerWebView.setTranslationY(ty);
+        playerWebView.setAlpha(alpha);
+        miniVideoTouchShield.setTranslationX(tx);
+        miniVideoTouchShield.setTranslationY(ty);
     }
 
-    private boolean handleTopBarDragTouch(MotionEvent ev) {
-        if (playerState != PlayerState.EXPANDED || ev == null) return false;
-        int action = ev.getActionMasked();
-        if (action == MotionEvent.ACTION_DOWN) {
-            topBarDownRawX = ev.getRawX();
-            topBarDownRawY = ev.getRawY();
-            topBarLastDy = 0f;
-            topBarDragging = false;
-            return true;
-        } else if (action == MotionEvent.ACTION_MOVE) {
-            float dy = ev.getRawY() - topBarDownRawY;
-            float dx = ev.getRawX() - topBarDownRawX;
-            if (!topBarDragging) {
-                if (dy > touchSlopPx && dy > Math.abs(dx)) {
-                    topBarDragging = true;
-                }
-            }
-            if (topBarDragging) {
-                topBarLastDy = Math.max(0f, dy - touchSlopPx);
-                applyInteractiveDrag(topBarLastDy);
-                return true;
-            }
-        } else if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) {
-            if (topBarDragging) {
-                boolean shouldMin = action == MotionEvent.ACTION_UP && topBarLastDy >= dpToPx(60);
-                topBarDragging = false;
-                topBarLastDy = 0f;
-                finishInteractiveDrag(shouldMin);
-                return true;
-            }
-            topBarDragging = false;
-            return true;
-        }
-        return false;
+    private void snapBackMiniCluster() {
+        if (imeVisible) return;
+        miniBarChrome.animate().translationX(0f).translationY(0f).alpha(1f).setDuration(160).start();
+        playerWebView.animate().translationX(0f).translationY(0f).alpha(1f).setDuration(160).start();
+        miniVideoTouchShield.animate().translationX(0f).translationY(0f).setDuration(160).start();
     }
 
     private void applyInteractiveDrag(float dyPx) {
         if (playerState != PlayerState.EXPANDED) return;
         float clamped = Math.max(0f, dyPx);
         playerWebView.setTranslationY(clamped);
-        playerTopBar.setTranslationY(clamped);
-        float topBarAlpha = Math.max(0f, 1f - (clamped / dpToPx(120)));
-        playerTopBar.setAlpha(topBarAlpha);
-        float backdropAlpha = Math.max(0f, 1f - (clamped / dpToPx(240)));
-        playerBackdrop.setAlpha(backdropAlpha);
+        float progress = Math.min(1f, clamped / dpToPx(280));
+        float scale = 1f - 0.08f * progress;
+        playerWebView.setScaleX(scale);
+        playerWebView.setScaleY(scale);
+        playerMinimizeBtn.setAlpha(Math.max(0f, 1f - (clamped / dpToPx(90))));
+        playerBackdrop.setAlpha(Math.max(0f, 1f - (clamped / dpToPx(240))));
     }
 
     private void finishInteractiveDrag(boolean shouldMinimize) {
         if (playerState != PlayerState.EXPANDED) return;
         if (shouldMinimize) {
             playerWebView.setTranslationY(0f);
-            playerTopBar.setTranslationY(0f);
-            playerTopBar.setAlpha(1f);
+            playerWebView.setScaleX(1f);
+            playerWebView.setScaleY(1f);
+            playerMinimizeBtn.setAlpha(1f);
             playerBackdrop.setAlpha(1f);
             minimizePlayer();
             return;
         }
-        playerWebView.animate().translationY(0f).setDuration(180).setListener(null).start();
-        playerTopBar.animate().translationY(0f).alpha(1f).setDuration(180).start();
+        playerWebView.animate().translationY(0f).scaleX(1f).scaleY(1f).setDuration(180).setListener(null).start();
+        playerMinimizeBtn.animate().alpha(1f).setDuration(180).start();
         playerBackdrop.animate().alpha(1f).setDuration(180).start();
     }
 
@@ -533,10 +566,10 @@ public class MainActivity extends AppCompatActivity {
             WebViewCompat.addDocumentStartJavaScript(webView, injectScriptSource, Collections.singleton("*"));
         }
 
-        webView.setWebViewClient(createRoleWebViewClient(role));
         if (roleWebChromeClient == null) {
             roleWebChromeClient = createRoleWebChromeClient();
         }
+        webView.setWebViewClient(createRoleWebViewClient(role));
         webView.setWebChromeClient(roleWebChromeClient);
     }
 
@@ -587,6 +620,22 @@ public class MainActivity extends AppCompatActivity {
                 super.doUpdateVisitedHistory(view, url, isReload);
                 if (isBrowse) {
                     browseInShorts = isShortsUrl(url);
+                    if (isWatchUrl(url)) {
+                        openVideoInPlayer(normalizeWatchUrl(url));
+                        mainHandler.postDelayed(() -> {
+                            if (browseWebView != null && isWatchUrl(browseWebView.getUrl())) {
+                                long now = SystemClock.uptimeMillis();
+                                if (now - lastBrowseWatchBounceMs > 900L) {
+                                    lastBrowseWatchBounceMs = now;
+                                    if (browseWebView.canGoBack()) {
+                                        browseWebView.goBack();
+                                    } else {
+                                        browseWebView.loadUrl(YOUTUBE_HOME);
+                                    }
+                                }
+                            }
+                        }, 250L);
+                    }
                 }
             }
 
@@ -632,6 +681,9 @@ public class MainActivity extends AppCompatActivity {
                         ViewGroup.LayoutParams.MATCH_PARENT
                 ));
                 fullscreenContainer.setVisibility(View.VISIBLE);
+                if (playerMinimizeBtn != null) {
+                    playerMinimizeBtn.setVisibility(View.GONE);
+                }
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
                 hideSystemBarsForFullscreen(true);
             }
@@ -648,6 +700,9 @@ public class MainActivity extends AppCompatActivity {
                 }
                 setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
                 hideSystemBarsForFullscreen(false);
+                if (playerState == PlayerState.EXPANDED && !inPipMode && playerMinimizeBtn != null) {
+                    playerMinimizeBtn.setVisibility(View.VISIBLE);
+                }
             }
         };
     }
@@ -729,15 +784,23 @@ public class MainActivity extends AppCompatActivity {
         playerState = nextState;
         if (playerWebView == null) return;
 
+        playerWebView.setTranslationX(0f);
         playerWebView.setTranslationY(0f);
-        playerTopBar.setTranslationY(0f);
-        playerTopBar.setAlpha(1f);
+        playerWebView.setScaleX(1f);
+        playerWebView.setScaleY(1f);
+        playerWebView.setAlpha(1f);
+        miniBarChrome.setTranslationX(0f);
+        miniBarChrome.setTranslationY(0f);
+        miniBarChrome.setAlpha(1f);
+        miniVideoTouchShield.setTranslationX(0f);
+        miniVideoTouchShield.setTranslationY(0f);
+        playerMinimizeBtn.setAlpha(1f);
         playerBackdrop.setAlpha(1f);
 
         if (nextState == PlayerState.HIDDEN) {
             playerWebView.setSwipeDownEnabled(false);
             playerBackdrop.setVisibility(View.GONE);
-            playerTopBar.setVisibility(View.GONE);
+            playerMinimizeBtn.setVisibility(View.GONE);
             miniBarChrome.setVisibility(View.GONE);
             miniVideoTouchShield.setVisibility(View.GONE);
             playerWebView.setVisibility(View.GONE);
@@ -751,15 +814,14 @@ public class MainActivity extends AppCompatActivity {
                     ViewGroup.LayoutParams.MATCH_PARENT
             );
             lp.gravity = Gravity.TOP | Gravity.START;
-            lp.topMargin = inPipMode ? 0 : dpToPx(44);
+            lp.topMargin = 0;
             playerWebView.setLayoutParams(lp);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                playerWebView.setElevation(dpToPx(6));
-            }
+            playerWebView.setElevation(dpToPx(6));
             playerWebView.setVisibility(View.VISIBLE);
+            playerWebView.requestLayout();
             playerWebView.setSwipeDownEnabled(!inPipMode);
             playerBackdrop.setVisibility(View.VISIBLE);
-            playerTopBar.setVisibility(inPipMode ? View.GONE : View.VISIBLE);
+            playerMinimizeBtn.setVisibility((inPipMode || customFullscreenView != null) ? View.GONE : View.VISIBLE);
             miniBarChrome.setVisibility(View.GONE);
             miniVideoTouchShield.setVisibility(View.GONE);
             syncMiniModeCssToPlayer(false);
@@ -767,22 +829,44 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // PlayerState.MINI
-        FrameLayout.LayoutParams miniLp = new FrameLayout.LayoutParams(dpToPx(106), dpToPx(60));
+        FrameLayout.LayoutParams miniLp = new FrameLayout.LayoutParams(dpToPx(MINI_WIDTH_DP), dpToPx(MINI_HEIGHT_DP));
         miniLp.gravity = Gravity.BOTTOM | Gravity.START;
-        miniLp.bottomMargin = dpToPx(54);
+        miniLp.bottomMargin = dpToPx(MINI_BOTTOM_MARGIN_DP);
         playerWebView.setLayoutParams(miniLp);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            playerWebView.setElevation(dpToPx(10));
-        }
+        playerWebView.setElevation(dpToPx(12));
         playerWebView.setVisibility(View.VISIBLE);
+        playerWebView.requestLayout();
         playerWebView.setSwipeDownEnabled(false);
         playerBackdrop.setVisibility(View.GONE);
-        playerTopBar.setVisibility(View.GONE);
-        miniBarChrome.setVisibility(View.VISIBLE);
-        miniVideoTouchShield.setVisibility(View.VISIBLE);
+        playerMinimizeBtn.setVisibility(View.GONE);
+        syncMiniVisibilityForIme();
         syncMiniModeCssToPlayer(true);
         updateProgressBarWidth();
         updateTitleViews();
+    }
+
+    private void syncMiniVisibilityForIme() {
+        if (playerState != PlayerState.MINI || playerWebView == null) return;
+        if (imeVisible) {
+            miniBarChrome.setVisibility(View.GONE);
+            miniVideoTouchShield.setVisibility(View.GONE);
+            playerWebView.setVisibility(View.VISIBLE);
+            playerWebView.setAlpha(0f);
+            playerWebView.setTranslationX(0f);
+            playerWebView.setTranslationY(dpToPx(240));
+        } else {
+            miniBarChrome.setTranslationX(0f);
+            miniBarChrome.setTranslationY(0f);
+            miniBarChrome.setAlpha(1f);
+            miniBarChrome.setVisibility(View.VISIBLE);
+            miniVideoTouchShield.setTranslationX(0f);
+            miniVideoTouchShield.setTranslationY(0f);
+            miniVideoTouchShield.setVisibility(View.VISIBLE);
+            playerWebView.setVisibility(View.VISIBLE);
+            playerWebView.setAlpha(1f);
+            playerWebView.setTranslationX(0f);
+            playerWebView.setTranslationY(0f);
+        }
     }
 
     private void syncMiniModeCssToPlayer(boolean isMini) {
@@ -815,9 +899,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateTitleViews() {
-        if (playerTopTitle != null) {
-            playerTopTitle.setText(currentTitle);
-        }
         if (miniTitleView != null) {
             miniTitleView.setText(currentTitle);
         }
@@ -828,8 +909,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void updateMiniPlayPauseIcon() {
-        if (miniPlayPauseBtn != null) {
-            miniPlayPauseBtn.setText(mediaIsPlaying ? "\u23f8" : "\u25b6");
+        if (playPauseIconDrawable != null) {
+            playPauseIconDrawable.setIconType(
+                    mediaIsPlaying ? VectorIconDrawable.ICON_PAUSE : VectorIconDrawable.ICON_PLAY
+            );
         }
     }
 
@@ -1159,6 +1242,98 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Exception ignored) {}
         return "";
+    }
+
+    private static final class VectorIconDrawable extends Drawable {
+        static final int ICON_CHEVRON_DOWN = 1;
+        static final int ICON_PLAY = 2;
+        static final int ICON_PAUSE = 3;
+        static final int ICON_CLOSE = 4;
+
+        private int iconType;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final float density;
+
+        VectorIconDrawable(int iconType, int color, float density) {
+            this.iconType = iconType;
+            this.density = density;
+            this.paint.setColor(color);
+            this.paint.setStrokeCap(Paint.Cap.ROUND);
+            this.paint.setStrokeJoin(Paint.Join.ROUND);
+        }
+
+        void setIconType(int iconType) {
+            if (this.iconType != iconType) {
+                this.iconType = iconType;
+                invalidateSelf();
+            }
+        }
+
+        @Override
+        public void draw(@NonNull Canvas canvas) {
+            Rect b = getBounds();
+            float cx = b.exactCenterX();
+            float cy = b.exactCenterY();
+            if (iconType == ICON_CHEVRON_DOWN) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(2.1f * density);
+                Path p = new Path();
+                p.moveTo(cx - 5.5f * density, cy - 2.5f * density);
+                p.lineTo(cx, cy + 3.0f * density);
+                p.lineTo(cx + 5.5f * density, cy - 2.5f * density);
+                canvas.drawPath(p, paint);
+            } else if (iconType == ICON_PLAY) {
+                paint.setStyle(Paint.Style.FILL);
+                Path p = new Path();
+                p.moveTo(cx - 4.5f * density, cy - 6.5f * density);
+                p.lineTo(cx + 6.5f * density, cy);
+                p.lineTo(cx - 4.5f * density, cy + 6.5f * density);
+                p.close();
+                canvas.drawPath(p, paint);
+            } else if (iconType == ICON_PAUSE) {
+                paint.setStyle(Paint.Style.FILL);
+                float r = 1.2f * density;
+                canvas.drawRoundRect(
+                        cx - 5.5f * density, cy - 6.5f * density,
+                        cx - 2.0f * density, cy + 6.5f * density, r, r, paint);
+                canvas.drawRoundRect(
+                        cx + 2.0f * density, cy - 6.5f * density,
+                        cx + 5.5f * density, cy + 6.5f * density, r, r, paint);
+            } else if (iconType == ICON_CLOSE) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(2.0f * density);
+                float d = 5.0f * density;
+                canvas.drawLine(cx - d, cy - d, cx + d, cy + d, paint);
+                canvas.drawLine(cx + d, cy - d, cx - d, cy + d, paint);
+            }
+        }
+
+        @Override
+        public int getIntrinsicWidth() {
+            return Math.round(24f * density);
+        }
+
+        @Override
+        public int getIntrinsicHeight() {
+            return Math.round(24f * density);
+        }
+
+        @Override
+        public void setAlpha(int alpha) {
+            paint.setAlpha(alpha);
+            invalidateSelf();
+        }
+
+        @Override
+        public void setColorFilter(@Nullable ColorFilter colorFilter) {
+            paint.setColorFilter(colorFilter);
+            invalidateSelf();
+        }
+
+        @Override
+        public int getOpacity() {
+            return PixelFormat.TRANSLUCENT;
+        }
     }
 
     private final class HostBridge {

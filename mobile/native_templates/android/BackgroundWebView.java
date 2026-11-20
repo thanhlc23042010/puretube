@@ -1,6 +1,7 @@
 package com.puretube.app;
 
 import android.content.Context;
+import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.View;
@@ -19,6 +20,7 @@ public class BackgroundWebView extends WebView {
     private float downRawX;
     private float downRawY;
     private float lastDragDy;
+    private long downTimeMs;
     private boolean trackingPotentialSwipe = false;
     private boolean draggingDown = false;
     private float touchSlop;
@@ -74,6 +76,7 @@ public class BackgroundWebView extends WebView {
                         && ev.getY() < playerZoneBottom;
                 draggingDown = false;
                 lastDragDy = 0f;
+                downTimeMs = SystemClock.uptimeMillis();
                 downRawX = ev.getRawX();
                 downRawY = ev.getRawY();
             } else if (action == MotionEvent.ACTION_POINTER_DOWN) {
@@ -88,11 +91,11 @@ public class BackgroundWebView extends WebView {
             } else if (action == MotionEvent.ACTION_MOVE && trackingPotentialSwipe) {
                 float dx = ev.getRawX() - downRawX;
                 float dy = ev.getRawY() - downRawY;
-                float activationSlop = touchSlop * 2.2f;
+                float activationSlop = touchSlop * 1.6f;
                 if (!draggingDown) {
                     if (dy < -touchSlop || (Math.abs(dx) > activationSlop && Math.abs(dx) > Math.abs(dy))) {
                         trackingPotentialSwipe = false;
-                    } else if (dy > activationSlop && dy > Math.abs(dx) * 1.6f) {
+                    } else if (dy > activationSlop && dy > Math.abs(dx) * 1.5f) {
                         draggingDown = true;
                         lastDragDy = 0f;
                         MotionEvent cancel = MotionEvent.obtain(ev);
@@ -108,7 +111,9 @@ public class BackgroundWebView extends WebView {
                 }
             } else if (action == MotionEvent.ACTION_UP) {
                 if (draggingDown) {
-                    boolean shouldMinimize = lastDragDy >= dpToPx(85f);
+                    long elapsed = SystemClock.uptimeMillis() - downTimeMs;
+                    boolean shouldMinimize = lastDragDy >= dpToPx(72f)
+                            || (lastDragDy >= dpToPx(42f) && elapsed <= 260L);
                     draggingDown = false;
                     trackingPotentialSwipe = false;
                     lastDragDy = 0f;
