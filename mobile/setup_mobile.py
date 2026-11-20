@@ -56,14 +56,20 @@ def patch_android() -> None:
 
     if ANDROID_BUILD_GRADLE.exists():
         gradle_text = ANDROID_BUILD_GRADLE.read_text(encoding="utf-8")
-        webkit_dep = 'implementation "androidx.webkit:webkit:$androidxWebkitVersion"'
         appcompat_anchor = 'implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"'
-        if webkit_dep not in gradle_text and appcompat_anchor in gradle_text:
-            gradle_text = gradle_text.replace(
-                appcompat_anchor,
-                f"{appcompat_anchor}\n    {webkit_dep}",
-                1,
-            )
+        changed = False
+        for dep in (
+            'implementation "androidx.webkit:webkit:$androidxWebkitVersion"',
+            'implementation "androidx.swiperefreshlayout:swiperefreshlayout:1.1.0"',
+        ):
+            if dep not in gradle_text and appcompat_anchor in gradle_text:
+                gradle_text = gradle_text.replace(
+                    appcompat_anchor,
+                    f"{appcompat_anchor}\n    {dep}",
+                    1,
+                )
+                changed = True
+        if changed:
             ANDROID_BUILD_GRADLE.write_text(gradle_text, encoding="utf-8")
             print("Patched android/app/build.gradle cleanly.")
 

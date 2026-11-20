@@ -23,6 +23,8 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
 final class PureTubeWebViewController: UIViewController, WKNavigationDelegate, WKScriptMessageHandler {
     private let homeURL = URL(string: "https://m.youtube.com")!
     private var webView: WKWebView!
+    private let refreshControl = UIRefreshControl()
+    private var urlObservation: NSKeyValueObservation?
 
     override var preferredStatusBarStyle: UIStatusBarStyle {
         .lightContent
@@ -69,8 +71,36 @@ final class PureTubeWebViewController: UIViewController, WKNavigationDelegate, W
             webView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor),
         ])
 
+        refreshControl.tintColor = UIColor(red: 1.0, green: 0.0, blue: 51 / 255.0, alpha: 1.0)
+        refreshControl.addTarget(self, action: #selector(handlePullToRefresh), for: .valueChanged)
+        webView.scrollView.refreshControl = refreshControl
+        urlObservation = webView.observe(\.url, options: [.new]) { [weak self] wv, _ in
+            DispatchQueue.main.async {
+                self?.syncRefreshControlForURL(wv.url)
+            }
+        }
+
         setupRemoteCommands()
         compileAdRulesAndLoad(into: ucc)
+    }
+
+    @objc private func handlePullToRefresh() {
+        webView.reload()
+    }
+
+    private func syncRefreshControlForURL(_ url: URL?) {
+        let path = url?.path ?? ""
+        let inShorts = path == "/shorts" || path.hasPrefix("/shorts/")
+        if inShorts {
+            if refreshControl.isRefreshing {
+                refreshControl.endRefreshing()
+            }
+            if webView.scrollView.refreshControl != nil {
+                webView.scrollView.refreshControl = nil
+            }
+        } else if webView.scrollView.refreshControl == nil {
+            webView.scrollView.refreshControl = refreshControl
+        }
     }
 
     private func loadInjectScript() -> String? {
@@ -140,6 +170,29 @@ final class PureTubeWebViewController: UIViewController, WKNavigationDelegate, W
         }
         UIApplication.shared.open(url, options: [:], completionHandler: nil)
         decisionHandler(.cancel)
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        syncRefreshControlForURL(webView.url)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        syncRefreshControlForURL(webView.url)
+        if refreshControl.isRefreshing {
+            refreshControl.endRefreshing()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if refreshControl.isRefreshing {
+            refreshControl.endRefreshing()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if refreshControl.isRefreshing {
+            refreshControl.endRefreshing()
+        }
     }
 
     func userContentController(

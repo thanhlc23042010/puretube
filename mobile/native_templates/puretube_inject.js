@@ -795,12 +795,503 @@
     ensureStyles();
     syncPrefsToNative();
     mountShieldButton();
+    applyRoleAndMiniClasses();
+    ensureDualStyles();
+    mountBrowseReloadControl();
+    emitMediaProgress();
     var v = findPrimaryVideo();
     if (v) {
       bindVideoListeners(v);
       emitMediaState(false);
     }
   }
+
+  var isMiniModeState = false;
+  var savedPlayerScrollY = 0;
+  var lastEmittedPermille = -1;
+  var dualHooksInstalled = false;
+
+  function getPtRole() {
+    try {
+      if (typeof window !== "undefined" && window.PureTubeHost && typeof window.PureTubeHost.getRole === "function") {
+        var r = String(window.PureTubeHost.getRole() || "").trim();
+        if (r === "browse" || r === "player") return r;
+      }
+    } catch (_) {}
+    return "single";
+  }
+
+  function applyRoleAndMiniClasses() {
+    if (typeof document === "undefined" || !document.documentElement) return;
+    var root = document.documentElement;
+    var role = getPtRole();
+    root.classList.remove("pt-role-browse", "pt-role-player", "pt-role-single");
+    root.classList.add("pt-role-" + role);
+    if (isMiniModeState) {
+      root.classList.add("pt-mini-mode");
+    } else {
+      root.classList.remove("pt-mini-mode");
+    }
+  }
+
+  function ensureDualStyles() {
+    if (typeof document === "undefined") return;
+    var container = document.head || document.documentElement;
+    if (!container) return;
+    if (document.getElementById("puretube-dual-styles")) return;
+    var style = document.createElement("style");
+    style.id = "puretube-dual-styles";
+    style.textContent = [
+      "html.pt-role-player ytm-mobile-topbar-renderer,",
+      "html.pt-role-player header.mobile-topbar-header,",
+      "html.pt-role-player #header-bar {",
+      "  display: none !important;",
+      "  height: 0 !important;",
+      "  min-height: 0 !important;",
+      "}",
+      "html.pt-role-player ytm-app {",
+      "  padding-top: 0 !important;",
+      "  --ytm-header-height: 0px !important;",
+      "}",
+      "html.pt-role-player #player-container-id,",
+      "html.pt-role-player .player-container,",
+      "html.pt-role-player .player-container.sticky-player {",
+      "  top: 0 !important;",
+      "  margin-top: 0 !important;",
+      "}",
+      "html.pt-mini-mode,",
+      "html.pt-mini-mode body {",
+      "  overflow: hidden !important;",
+      "  background: #000 !important;",
+      "  margin: 0 !important;",
+      "  padding: 0 !important;",
+      "  width: 100vw !important;",
+      "  height: 100vh !important;",
+      "}",
+      "html.pt-mini-mode body > *:not(ytm-app),",
+      "html.pt-mini-mode ytm-mobile-topbar-renderer,",
+      "html.pt-mini-mode #header-bar,",
+      "html.pt-mini-mode .watch-below-the-player,",
+      "html.pt-mini-mode ytm-single-column-watch-next-results-renderer,",
+      "html.pt-mini-mode ytm-item-section-renderer,",
+      "html.pt-mini-mode ytm-pivot-bar-renderer,",
+      "html.pt-mini-mode #player-control-overlay,",
+      "html.pt-mini-mode .player-controls-content,",
+      "html.pt-mini-mode .ytp-chrome-top,",
+      "html.pt-mini-mode .ytp-chrome-bottom,",
+      "html.pt-mini-mode .ytp-gradient-top,",
+      "html.pt-mini-mode .ytp-gradient-bottom,",
+      "html.pt-mini-mode .ytp-watermark,",
+      "html.pt-mini-mode .ytp-ce-element,",
+      "html.pt-mini-mode .ytp-pause-overlay,",
+      "html.pt-mini-mode .html5-endscreen {",
+      "  display: none !important;",
+      "  opacity: 0 !important;",
+      "  pointer-events: none !important;",
+      "}",
+      "html.pt-mini-mode #player-container-id,",
+      "html.pt-mini-mode #player,",
+      "html.pt-mini-mode #movie_player,",
+      "html.pt-mini-mode .html5-video-player,",
+      "html.pt-mini-mode .html5-video-container {",
+      "  position: fixed !important;",
+      "  top: 0 !important;",
+      "  left: 0 !important;",
+      "  right: 0 !important;",
+      "  bottom: 0 !important;",
+      "  width: 100vw !important;",
+      "  height: 100vh !important;",
+      "  min-width: 100vw !important;",
+      "  min-height: 100vh !important;",
+      "  max-width: none !important;",
+      "  max-height: none !important;",
+      "  margin: 0 !important;",
+      "  padding: 0 !important;",
+      "  z-index: 2147483640 !important;",
+      "  background: #000 !important;",
+      "}",
+      "html.pt-mini-mode #movie_player video,",
+      "html.pt-mini-mode .html5-video-player video,",
+      "html.pt-mini-mode video.html5-main-video,",
+      "html.pt-mini-mode video {",
+      "  position: fixed !important;",
+      "  top: 0 !important;",
+      "  left: 0 !important;",
+      "  width: 100vw !important;",
+      "  height: 100vh !important;",
+      "  min-width: 100vw !important;",
+      "  min-height: 100vh !important;",
+      "  object-fit: cover !important;",
+      "  transform: none !important;",
+      "  background: #000 !important;",
+      "}",
+      "#puretube-reload-btn {",
+      "  display: inline-flex !important;",
+      "  align-items: center !important;",
+      "  justify-content: center !important;",
+      "  width: 32px !important;",
+      "  height: 32px !important;",
+      "  margin: 0 4px !important;",
+      "  border-radius: 999px !important;",
+      "  border: 1px solid rgba(255,255,255,0.18) !important;",
+      "  background: rgba(255,255,255,0.1) !important;",
+      "  color: #f1f1f1 !important;",
+      "  font-size: 16px !important;",
+      "  line-height: 1 !important;",
+      "  cursor: pointer !important;",
+      "  flex: 0 0 auto !important;",
+      "  transition: transform 0.35s ease, background 0.15s ease !important;",
+      "}",
+      "#puretube-reload-btn.pt-spinning {",
+      "  transform: rotate(360deg) !important;",
+      "}",
+      "#puretube-fallback-bar {",
+      "  position: fixed !important;",
+      "  top: 10px !important;",
+      "  right: 12px !important;",
+      "  z-index: 2147483645 !important;",
+      "  display: inline-flex !important;",
+      "  align-items: center !important;",
+      "  gap: 6px !important;",
+      "  padding: 4px 8px !important;",
+      "  border-radius: 999px !important;",
+      "  background: rgba(20,20,20,0.88) !important;",
+      "  border: 1px solid rgba(255,255,255,0.16) !important;",
+      "  box-shadow: 0 4px 16px rgba(0,0,0,0.45) !important;",
+      "}"
+    ].join("\n");
+    container.appendChild(style);
+  }
+
+  function extractWatchUrl(rawHref) {
+    try {
+      if (!rawHref || typeof rawHref !== "string") return null;
+      var trimmed = rawHref.trim();
+      if (!trimmed || trimmed.charAt(0) === "#" || /^javascript:/i.test(trimmed)) return null;
+      var base = (typeof window !== "undefined" && window.location && window.location.href)
+        ? window.location.href
+        : "https://m.youtube.com/";
+      var parsed = new URL(trimmed, base);
+      var host = (parsed.hostname || "").toLowerCase();
+      if (host === "youtu.be" || host.endsWith(".youtu.be")) {
+        var seg = (parsed.pathname || "").replace(/^\/+/, "").split("/")[0];
+        if (!/^[A-Za-z0-9_-]{11}$/.test(seg)) return null;
+        var ytOut = new URL("https://m.youtube.com/watch");
+        ytOut.searchParams.set("v", seg);
+        var tParam = parsed.searchParams.get("t");
+        if (tParam) ytOut.searchParams.set("t", tParam);
+        return ytOut.toString();
+      }
+      var isYtHost = host === "youtube.com" || host.endsWith(".youtube.com") || host === "youtube-nocookie.com" || host.endsWith(".youtube-nocookie.com");
+      if (!isYtHost) return null;
+      if (parsed.pathname !== "/watch") return null;
+      var vid = parsed.searchParams.get("v") || "";
+      if (!/^[A-Za-z0-9_-]{11}$/.test(vid)) return null;
+      return parsed.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function extractShortsUrl(rawHref) {
+    try {
+      if (!rawHref || typeof rawHref !== "string") return null;
+      var base = (typeof window !== "undefined" && window.location && window.location.href)
+        ? window.location.href
+        : "https://m.youtube.com/";
+      var parsed = new URL(rawHref, base);
+      var host = (parsed.hostname || "").toLowerCase();
+      var isYtHost = host === "youtube.com" || host.endsWith(".youtube.com");
+      if (!isYtHost) return null;
+      if (/^\/shorts(\/|$)/.test(parsed.pathname || "")) return parsed.toString();
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function extractBrowseUrlFromPlayer(rawHref) {
+    try {
+      if (!rawHref || typeof rawHref !== "string") return null;
+      var trimmed = rawHref.trim();
+      if (!trimmed || trimmed.charAt(0) === "#" || /^javascript:/i.test(trimmed)) return null;
+      var base = (typeof window !== "undefined" && window.location && window.location.href)
+        ? window.location.href
+        : "https://m.youtube.com/";
+      var parsed = new URL(trimmed, base);
+      var host = (parsed.hostname || "").toLowerCase();
+      var isYtHost = host === "youtube.com" || host.endsWith(".youtube.com");
+      if (!isYtHost) return null;
+      var p = parsed.pathname || "/";
+      if (p === "/watch") return null;
+      if (
+        p === "/" ||
+        p.indexOf("/@") === 0 ||
+        p.indexOf("/channel/") === 0 ||
+        p.indexOf("/c/") === 0 ||
+        p.indexOf("/user/") === 0 ||
+        p.indexOf("/results") === 0 ||
+        p.indexOf("/feed/") === 0 ||
+        p.indexOf("/playlist") === 0 ||
+        p.indexOf("/shorts") === 0 ||
+        p.indexOf("/hashtag/") === 0
+      ) {
+        return parsed.toString();
+      }
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function ptIsYouTubeApiUrl(url) {
+    try {
+      var u = String(url || "");
+      return /^https?:\/\/([^/]+\.)?youtube(?:kids)?\.com\/youtubei\/v1\/(player|next|browse|search|get_watch|reel\/reel_watch_sequence)\b/i.test(u);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function setMiniMode(isMini) {
+    var nextMini = Boolean(isMini);
+    if (nextMini && !isMiniModeState) {
+      try {
+        savedPlayerScrollY = typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || 0) : 0;
+      } catch (_) {
+        savedPlayerScrollY = 0;
+      }
+    }
+    isMiniModeState = nextMini;
+    ensureDualStyles();
+    applyRoleAndMiniClasses();
+    try {
+      if (typeof window !== "undefined" && typeof window.scrollTo === "function") {
+        if (nextMini) {
+          window.scrollTo(0, 0);
+        } else if (savedPlayerScrollY > 0) {
+          var restoreY = savedPlayerScrollY;
+          savedPlayerScrollY = 0;
+          window.scrollTo(0, restoreY);
+        }
+      }
+    } catch (_) {}
+    return isMiniModeState;
+  }
+
+  function notifyHostOpenVideo(url) {
+    try {
+      if (typeof window !== "undefined" && window.PureTubeHost && typeof window.PureTubeHost.openVideo === "function") {
+        window.PureTubeHost.openVideo(url);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function notifyHostOpenInBrowse(url) {
+    try {
+      if (typeof window !== "undefined" && window.PureTubeHost && typeof window.PureTubeHost.openInBrowse === "function") {
+        window.PureTubeHost.openInBrowse(url);
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function notifyHostBrowseShorts(url) {
+    if (!extractShortsUrl(url || (typeof window !== "undefined" && window.location ? window.location.href : ""))) return;
+    try {
+      if (typeof window !== "undefined" && window.PureTubeHost && typeof window.PureTubeHost.onBrowseShorts === "function") {
+        window.PureTubeHost.onBrowseShorts();
+      }
+    } catch (_) {}
+  }
+
+  function emitMediaProgress() {
+    try {
+      if (typeof window === "undefined" || !window.PureTubeHost || typeof window.PureTubeHost.onMediaProgress !== "function") return;
+      var v = typeof findPrimaryVideo === "function" ? findPrimaryVideo() : (typeof document !== "undefined" ? document.querySelector("video") : null);
+      var permille = 0;
+      if (v && isFinite(v.duration) && v.duration > 0 && isFinite(v.currentTime)) {
+        permille = Math.max(0, Math.min(1000, Math.round((v.currentTime / v.duration) * 1000)));
+      }
+      if (permille !== lastEmittedPermille) {
+        lastEmittedPermille = permille;
+        window.PureTubeHost.onMediaProgress(permille);
+      }
+    } catch (_) {}
+  }
+
+  function triggerBrowseReload(btn) {
+    if (btn) {
+      btn.classList.add("pt-spinning");
+      setTimeout(function () {
+        btn.classList.remove("pt-spinning");
+      }, 450);
+    }
+    try {
+      if (typeof window !== "undefined" && window.PureTubeHost && typeof window.PureTubeHost.reloadBrowse === "function") {
+        window.PureTubeHost.reloadBrowse();
+        return;
+      }
+    } catch (_) {}
+    try {
+      if (typeof window !== "undefined" && window.location) window.location.reload();
+    } catch (_) {}
+  }
+
+  function mountBrowseReloadControl() {
+    if (typeof document === "undefined" || !document.body) return;
+    if (getPtRole() !== "browse") {
+      var oldBar = document.getElementById("puretube-fallback-bar");
+      if (oldBar && oldBar.parentNode) oldBar.parentNode.removeChild(oldBar);
+      return;
+    }
+    var btn = document.getElementById("puretube-reload-btn");
+    if (!btn) {
+      btn = document.createElement("button");
+      btn.id = "puretube-reload-btn";
+      btn.type = "button";
+      btn.textContent = "\u21bb";
+      btn.title = "T\u1ea3i l\u1ea1i trang";
+      btn.setAttribute("aria-label", "T\u1ea3i l\u1ea1i trang");
+      btn.addEventListener("click", function (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        triggerBrowseReload(btn);
+      });
+    }
+
+    var topbar =
+      document.querySelector("ytm-mobile-topbar-renderer .mobile-topbar-header-content") ||
+      document.querySelector("ytm-mobile-topbar-renderer header") ||
+      document.querySelector("#header-bar .mobile-topbar-header-content") ||
+      document.querySelector("ytm-desktop-topbar-renderer #end") ||
+      document.querySelector("ytd-masthead #end");
+
+    var shieldBtn = document.getElementById("puretube-shield-btn");
+    if (topbar) {
+      var staleBar = document.getElementById("puretube-fallback-bar");
+      if (staleBar && staleBar.parentNode) staleBar.parentNode.removeChild(staleBar);
+      if (shieldBtn && topbar.contains(shieldBtn)) {
+        if (btn.parentNode !== topbar || btn.nextSibling !== shieldBtn) {
+          topbar.insertBefore(btn, shieldBtn);
+        }
+      } else if (btn.parentNode !== topbar) {
+        var searchBtn = topbar.querySelector("button, a, ytm-topbar-menu-button-renderer");
+        if (searchBtn) {
+          topbar.insertBefore(btn, searchBtn);
+        } else {
+          topbar.appendChild(btn);
+        }
+      }
+      return;
+    }
+
+    var fallbackBar = document.getElementById("puretube-fallback-bar");
+    if (!fallbackBar) {
+      fallbackBar = document.createElement("div");
+      fallbackBar.id = "puretube-fallback-bar";
+      document.body.appendChild(fallbackBar);
+    }
+    if (shieldBtn && shieldBtn.parentNode !== fallbackBar) {
+      fallbackBar.style.right = "60px";
+    }
+    if (btn.parentNode !== fallbackBar) {
+      fallbackBar.appendChild(btn);
+    }
+  }
+
+  function installDualWebViewBridge() {
+    if (typeof window === "undefined") return;
+    window.__puretubeSetMiniMode = setMiniMode;
+
+    var exportedApi = {
+      extractWatchUrl: extractWatchUrl,
+      extractBrowseUrlFromPlayer: extractBrowseUrlFromPlayer,
+      setMiniMode: setMiniMode,
+      getRole: getPtRole,
+      pruneYouTubeAds: typeof pruneYouTubeAds === "function" ? pruneYouTubeAds : function (payload) { return payload; },
+      isYouTubeApiUrl: typeof isYouTubeApiUrl === "function" ? isYouTubeApiUrl : ptIsYouTubeApiUrl
+    };
+    window.__PureTubeExtTestAPI = Object.assign(window.__PureTubeExtTestAPI || {}, exportedApi);
+    window.__PureTubeInjectAPI = Object.assign(window.__PureTubeInjectAPI || {}, exportedApi);
+
+    if (dualHooksInstalled) return;
+    dualHooksInstalled = true;
+
+    applyRoleAndMiniClasses();
+    ensureDualStyles();
+    if (getPtRole() === "browse" && window.location && window.location.href) {
+      notifyHostBrowseShorts(window.location.href);
+    }
+
+    if (typeof document !== "undefined") {
+      document.addEventListener("click", function (ev) {
+        try {
+          if (!ev || ev.defaultPrevented) return;
+          if (typeof ev.button === "number" && ev.button !== 0) return;
+          var target = ev.target;
+          if (!target || typeof target.closest !== "function") return;
+          if (target.closest("ytm-menu-renderer, ytm-button-renderer, #puretube-shield-btn, #puretube-reload-btn")) return;
+          var anchor = target.closest("a[href]");
+          if (!anchor) return;
+          var href = anchor.getAttribute("href") || anchor.href;
+          var role = getPtRole();
+          if (role === "browse") {
+            var watchUrl = extractWatchUrl(href);
+            if (watchUrl && notifyHostOpenVideo(watchUrl)) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+              return;
+            }
+            notifyHostBrowseShorts(href);
+          } else if (role === "player") {
+            var browseUrl = extractBrowseUrlFromPlayer(href);
+            if (browseUrl && notifyHostOpenInBrowse(browseUrl)) {
+              ev.preventDefault();
+              ev.stopPropagation();
+              if (typeof ev.stopImmediatePropagation === "function") ev.stopImmediatePropagation();
+            }
+          }
+        } catch (_) {}
+      }, true);
+    }
+
+    if (typeof history !== "undefined") {
+      var wrapHistoryMethod = function (methodName) {
+        var orig = history[methodName];
+        if (typeof orig !== "function") return;
+        history[methodName] = function (state, title, url) {
+          try {
+            if (url !== undefined && url !== null) {
+              var nextUrl = String(url);
+              var role = getPtRole();
+              if (role === "browse") {
+                var watchUrl = extractWatchUrl(nextUrl);
+                if (watchUrl && notifyHostOpenVideo(watchUrl)) {
+                  return;
+                }
+                notifyHostBrowseShorts(nextUrl);
+              } else if (role === "player") {
+                var browseUrl = extractBrowseUrlFromPlayer(nextUrl);
+                if (browseUrl && notifyHostOpenInBrowse(browseUrl)) {
+                  return;
+                }
+              }
+            }
+          } catch (_) {}
+          return orig.apply(this, arguments);
+        };
+      };
+      wrapHistoryMethod("pushState");
+      wrapHistoryMethod("replaceState");
+    }
+  }
+
+  installDualWebViewBridge();
 
   if (typeof document !== "undefined") {
     if (document.readyState === "loading") {
@@ -809,13 +1300,17 @@
       bootDomHooks();
     }
     setInterval(function () {
+      applyRoleAndMiniClasses();
       ensureStyles();
+      ensureDualStyles();
       mountShieldButton();
+      mountBrowseReloadControl();
       var v = findPrimaryVideo();
       if (v) bindVideoListeners(v);
       runAdSkipTick();
       runSponsorBlockTick();
       emitMediaState(false);
+      emitMediaProgress();
     }, 350);
   }
 })();
